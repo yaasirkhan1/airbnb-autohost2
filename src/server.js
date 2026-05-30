@@ -255,33 +255,69 @@ Keep replies concise (2-4 sentences). Answer directly. Never make up information
 // ─── Webhook ──────────────────────────────────────────────────────────────────
 
 app.post('/webhook/hospitable', async (req, res) => {
+  // Always 200 first so Hospitable doesn't retry
   res.sendStatus(200);
+
+  // Log the full raw payload immediately — visible in Railway logs regardless of what follows
+  console.log('[webhook] Received payload:', JSON.stringify(req.body, null, 2));
+
   const event = req.body;
-  if (event?.action !== 'message.created') return;
 
-  const msg = event?.data;
-  const senderType = msg?.sender_type || msg?.attributes?.sender_type;
-  if (senderType === 'host') return;
+  // Validate action
+  if (!event?.action) {
+    console.log('[webhook] Ignored — no action field. Full body logged above.');
+    return;
+  }
+  if (event.action !== 'message.created') {
+    console.log(`[webhook] Ignored — action is "${event.action}", expected "message.created"`);
+    return;
+  }
 
-  const conversationId = msg?.conversation_id || msg?.relationships?.conversation?.data?.id;
-  const guestName = msg?.guest_name || msg?.attributes?.guest_name || 'Guest';
-  const messageBody = msg?.body || msg?.attributes?.body || '';
-  const propertyName = msg?.property_name || msg?.attributes?.property_name || 'your listing';
-  const propertyId = msg?.property_id || msg?.relationships?.property?.data?.id;
+  // Message schema (per Hospitable OpenAPI spec):
+  // { conversation_id, body, sender_type, sender: { full_name, first_name }, ... }
+  const msg = event.data;
+  if (!msg) {
+    console.log('[webhook] Ignored — event.data is empty');
+    return;
+  }
 
-  if (!conversationId || !messageBody) return;
+  const senderType = msg.sender_type;
+  if (senderType === 'host') {
+    console.log('[webhook] Ignored — sender_type is host');
+    return;
+  }
 
-  console.log(`[webhook] Message from ${guestName} at "${propertyName}": "${messageBody.slice(0, 80)}"`);
+  const conversationId = msg.conversation_id;
+  const messageBody    = msg.body || '';
+  const guestName      = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
 
-  // If we don't have a profile for this property yet, learn it now
+  if (!conversationId) { console.log('[webhook] Ignored — no conversation_id'); return; }
+  if (!messageBody)    { console.log('[webhook] Ignored — empty message body'); return; }
+
+  console.log(`[webhook] ✉ Guest "${guestName}" (convo ${conversationId}): "${messageBody.slice(0, 100)}"`);
+
+  // Fetch conversation to get property info (Message schema has no property_id)
+  let propertyId   = null;
+  let propertyName = 'your listing';
+  try {
+    const convo = await hospGet(`/conversations/${conversationId}`);
+    propertyId   = convo.data?.property_id || convo.property_id || null;
+    propertyName = convo.data?.property_name || convo.property_name || 'your listing';
+    console.log(`[webhook] Property: "${propertyName}" (${propertyId})`);
+  } catch (e) {
+    console.warn(`[webhook] Could not fetch conversation for property info: ${e.message}`);
+  }
+
+  // Kick off profile learning for unknown properties (non-blocking)
   if (propertyId && !propertyProfiles.has(propertyId)) {
-    console.log(`[learn] No profile for ${propertyName} yet — learning now...`);
+    console.log(`[learn] No profile yet for "${propertyName}" — learning in background`);
     learnPropertyProfile(propertyId, propertyName).catch(console.error);
   }
 
   try {
     const draftedReply = await draftReply(guestName, messageBody, propertyName, propertyId);
     scheduleReply(conversationId, guestName, messageBody, draftedReply, propertyName, propertyId);
+    console.log(`[webhook] ✓ Reply scheduled for "${guestName}"`);
   } catch (err) {
     console.error('[webhook] Error drafting reply:', err.message);
   }
@@ -407,6 +443,55 @@ app.get('/health', (req, res) => res.json({
   profilesLoaded: propertyProfiles.size,
   uptime: Math.floor(process.uptime()),
 }));
+
+app.get('/test', (req, res) => {
+  const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : '(set RAILWAY_PUBLIC_DOMAIN env var)';
+  res.json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    webhookUrl: `${railwayUrl}/webhook/hospitable`,
+    envCheck: {
+      HOSPITABLE_API_KEY: !!process.env.HOSPITABLE_API_KEY,
+      ANTHROPIC_API_KEY:  !!process.env.ANTHROPIC_API_KEY,
+      HOST_NAME:          process.env.HOST_NAME || '(not set)',
+      REPLY_DELAY_MINUTES: HOST_SETTINGS.delayMinutes,
+      AUTOSEND:           HOST_SETTINGS.autosend,
+    },
+    queue: {
+      pending: pendingReplies.size,
+      profilesLoaded: propertyProfiles.size,
+    },
+  });
+});
+
+// Simulate a webhook for manual testing
+app.post('/webhook/test', async (req, res) => {
+  const fake = {
+    action: 'message.created',
+    data: {
+      conversation_id: req.body.conversation_id || 'test-convo-123',
+      body: req.body.message || 'Hi, what is the wifi password?',
+      sender_type: 'guest',
+      sender: { full_name: req.body.guest_name || 'Test Guest' },
+    },
+  };
+  console.log('[webhook/test] Simulating guest message:', JSON.stringify(fake));
+  req.body = fake;
+  // Re-use the real handler logic inline
+  const msg = fake.data;
+  const guestName   = msg.sender?.full_name || 'Test Guest';
+  const messageBody = msg.body;
+  const conversationId = msg.conversation_id;
+  try {
+    const draft = await draftReply(guestName, messageBody, 'Test Property', null);
+    scheduleReply(conversationId, guestName, messageBody, draft, 'Test Property', null);
+    res.json({ ok: true, draft, conversationId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
