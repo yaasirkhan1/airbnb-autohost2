@@ -706,8 +706,20 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`\n🏠 Airbnb AutoHost running on port ${PORT}`);
   console.log(`   Host: ${HOST_SETTINGS.name} | Delay: ${HOST_SETTINGS.delayMinutes}min\n`);
-  // Start learning profiles after 3 second startup delay
-  setTimeout(initAllPropertyProfiles, 3000);
+  setTimeout(() => {
+    initAllPropertyProfiles().catch(e => {
+      console.error('[startup] initAllPropertyProfiles failed:', e.message);
+    });
+  }, 3000);
+});
+
+// Catch unhandled promise rejections so a single async failure can't take
+// down the server (Railway sends SIGTERM when the process exits unexpectedly)
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[process] Uncaught exception:', err.message, err.stack);
 });
 
 // ─── Vault routes ─────────────────────────────────────────────────────────────

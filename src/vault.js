@@ -22,14 +22,29 @@ function persistVault() {
 }
 
 function loadVault() {
+  if (!fs.existsSync(VAULT_PATH)) return;
+  let raw;
   try {
-    if (fs.existsSync(VAULT_PATH)) {
-      const entries = JSON.parse(fs.readFileSync(VAULT_PATH, 'utf8'));
-      for (const [id, data] of Object.entries(entries)) vault.set(id, data);
-      console.log(`[vault] Loaded ${vault.size} entr${vault.size === 1 ? 'y' : 'ies'} from disk`);
-    }
+    raw = fs.readFileSync(VAULT_PATH, 'utf8');
   } catch (e) {
-    console.error('[vault] Failed to load from disk:', e.message);
+    console.error('[vault] Could not read vault.json:', e.message);
+    return;
+  }
+  let entries;
+  try {
+    entries = JSON.parse(raw);
+  } catch (e) {
+    // Corrupted JSON — back up and start clean so the server can still start
+    const corrupt = VAULT_PATH + '.corrupt';
+    try { fs.renameSync(VAULT_PATH, corrupt); } catch (_) {}
+    console.error(`[vault] vault.json is corrupted (${e.message}) — backed up to vault.json.corrupt and starting with empty vault`);
+    return;
+  }
+  try {
+    for (const [id, data] of Object.entries(entries)) vault.set(id, data);
+    console.log(`[vault] Loaded ${vault.size} entr${vault.size === 1 ? 'y' : 'ies'} from disk`);
+  } catch (e) {
+    console.error('[vault] Failed to populate vault from disk data:', e.message);
   }
 }
 
@@ -181,7 +196,12 @@ Generate a ${intensity} variation:`;
   return variation;
 }
 
-// Load persisted data on startup
-loadVault();
+// Load persisted data on startup — wrapped so any unexpected error never
+// prevents the module from loading and crashing the server
+try {
+  loadVault();
+} catch (e) {
+  console.error('[vault] Unexpected error during loadVault — starting with empty vault:', e.message);
+}
 
 module.exports = { getVault, getVaultEntry, saveToVault, saveVariation, splitDescription, generateVariation };
