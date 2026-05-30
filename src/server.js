@@ -918,11 +918,13 @@ app.get('/test', (req, res) => {
     uptime: Math.floor(process.uptime()),
     webhookUrl: `${railwayUrl}/webhook/hospitable`,
     envCheck: {
-      HOSPITABLE_API_KEY: !!process.env.HOSPITABLE_API_KEY,
-      ANTHROPIC_API_KEY:  !!process.env.ANTHROPIC_API_KEY,
-      HOST_NAME:          process.env.HOST_NAME || '(not set)',
-      REPLY_DELAY_MINUTES: HOST_SETTINGS.delayMinutes,
-      AUTOSEND:           HOST_SETTINGS.autosend,
+      HOSPITABLE_API_KEY:       !!process.env.HOSPITABLE_API_KEY,
+      ANTHROPIC_API_KEY:        !!process.env.ANTHROPIC_API_KEY,
+      HOST_NAME:                process.env.HOST_NAME || '(not set)',
+      REPLY_DELAY_MINUTES:      HOST_SETTINGS.delayMinutes,
+      AUTOSEND:                 HOST_SETTINGS.autosend,
+      API_SECRET:               !!process.env.API_SECRET,
+      HOSPITABLE_WEBHOOK_SECRET:!!process.env.HOSPITABLE_WEBHOOK_SECRET,
     },
     queue: {
       pending: pendingReplies.size,
