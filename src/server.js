@@ -891,7 +891,18 @@ app.get('/api/pricing/probe', async (req, res) => {
     }
     await new Promise(r => setTimeout(r, 300));
   }
-  res.json({ property_id: propId, results: out });
+  // Also fetch the full property record to see pricing metadata
+  let propRecord = null;
+  try {
+    const pr = await fetch(`https://public.api.hospitable.com/v2/properties/${propId}`, {
+      headers: { Authorization: `Bearer ${process.env.HOSPITABLE_API_KEY}`, Accept: 'application/json' },
+    });
+    propRecord = await pr.json();
+  } catch (e) {
+    propRecord = { error: e.message };
+  }
+
+  res.json({ property_id: propId, property_record: propRecord, put_results: out });
 });
 
 app.post('/api/notify', async (req, res) => {
