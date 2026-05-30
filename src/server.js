@@ -190,22 +190,32 @@ async function initAllPropertyProfiles() {
 async function warmUpSeenMessages() {
   if (!knownPropertyIds.length) return;
   console.log('[poll] Warm-up — marking existing inbox messages as seen...');
-  // Fetch recent reservations (default window = next 2 weeks per spec)
-  // properties[] is a required param on GET /reservations
   const qs = buildPropertyQs();
   const data = await hospGet(`/reservations?${qs}&per_page=50&include=guest`);
   const reservations = parseReservations(data);
   console.log(`[poll] Warm-up: found ${reservations.length} reservations to scan`);
+
+  // Grace window: messages younger than 5 minutes are NOT marked seen during warm-up.
+  // This ensures messages sent while the server was redeploying still get a reply.
+  const graceCutoff = toHospitableDate(new Date(Date.now() - 5 * 60 * 1000));
+
   for (const r of reservations) {
     try {
       const msgData = await hospGet(`/reservations/${r.id}/messages?per_page=20`);
       const messages = parseMessages(msgData);
-      for (const m of messages) seenMessageIds.add(messageKey(r.id, m));
+      for (const m of messages) {
+        // Only mark as seen if the message is older than the grace window
+        if (m.created_at && m.created_at > graceCutoff) {
+          console.log(`[poll] Warm-up: leaving recent message unseen for reply (${m.created_at})`);
+          continue;
+        }
+        seenMessageIds.add(messageKey(r.id, m));
+      }
     } catch (e) {
       console.warn(`[poll] Warm-up: could not fetch messages for reservation ${r.id}: ${e.message}`);
     }
   }
-  console.log(`[poll] Warm-up done — ${seenMessageIds.size} existing messages marked seen`);
+  console.log(`[poll] Warm-up done — ${seenMessageIds.size} existing messages marked seen (grace window: ${graceCutoff})`);
 }
 
 async function pollForNewMessages() {
@@ -654,7 +664,7 @@ app.get('/health', (req, res) => res.json({
   pending: pendingReplies.size,
   profilesLoaded: propertyProfiles.size,
   uptime: Math.floor(process.uptime()),
-  polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size },
+  polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size, inquiriesDisabled: inquiriesUnavailable },
 }));
 
 app.get('/test', (req, res) => {
