@@ -479,39 +479,33 @@ app.post('/api/vault/:propertyId/variation', async (req, res) => {
   }
 });
 
-// Push a variation (or master) to Hospitable
-app.post('/api/vault/:propertyId/push', async (req, res) => {
+// Format vault content for clipboard export
+// NOTE: The Hospitable public API v2 exposes no write endpoint for listing
+// content (title, description, sections). The only writable property operation
+// is PUT /properties/{uuid}/calendar (pricing/availability). Until Hospitable
+// adds a content-write endpoint, updates must be pasted manually into the app.
+app.post('/api/vault/:propertyId/push', (req, res) => {
   const { title, summary, the_space, guest_access, neighborhood, getting_around, other_notes, houseRules } = req.body;
-  const propertyId = req.params.propertyId;
-  try {
-    const payload = {
-      name:                     title        || undefined,
-      description:              summary      || undefined,
-      space_overview:           the_space    || undefined,
-      guest_access:             guest_access || undefined,
-      neighborhood_description: neighborhood || undefined,
-      getting_around:           getting_around || undefined,
-      other_details:            other_notes  || undefined,
-      house_rules:              houseRules   || undefined,
-    };
-    // Strip undefined keys so Hospitable doesn't overwrite fields with blank values
-    Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
 
-    const r = await fetch(`https://public.api.hospitable.com/v2/properties/${propertyId}`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${process.env.HOSPITABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!r.ok) {
-      const err = await r.text();
-      throw new Error(`Hospitable ${r.status}: ${err}`);
-    }
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+  const SECTION_LABELS = {
+    summary:        'SUMMARY',
+    the_space:      'THE SPACE',
+    guest_access:   'GUEST ACCESS',
+    neighborhood:   'NEIGHBORHOOD',
+    getting_around: 'GETTING AROUND',
+    other_notes:    'OTHER NOTES',
+    houseRules:     'HOUSE RULES',
+  };
+  const values = { summary, the_space, guest_access, neighborhood, getting_around, other_notes, houseRules };
+
+  const lines = [`TITLE:\n${title || ''}`];
+  for (const [key, label] of Object.entries(SECTION_LABELS)) {
+    if (values[key]) lines.push(`${label}:\n${values[key]}`);
   }
+
+  res.json({
+    ok: true,
+    clipboard: lines.join('\n\n'),
+    notice: 'The Hospitable public API does not support writing listing content. Copy the text below and paste each section into Hospitable manually.',
+  });
 });

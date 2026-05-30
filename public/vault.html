@@ -96,6 +96,12 @@
   .variation-section-text::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 24px; background: linear-gradient(transparent, var(--surface2)); }
   .variation-actions { display: flex; gap: 6px; }
 
+  .copy-panel { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-top: 1rem; }
+  .copy-panel-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .copy-panel-label { font-size: 12px; color: var(--amber); text-transform: uppercase; letter-spacing: 0.06em; flex: 1; }
+  .copy-panel textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--text); font-family: monospace; line-height: 1.6; resize: vertical; min-height: 200px; }
+  .copy-notice { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
   .history-list { margin-top: 1rem; }
   .history-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
   .history-item:last-child { border-bottom: none; }
@@ -277,7 +283,7 @@ function renderEditor() {
 
         <div class="action-row">
           <button class="btn btn-green" onclick="saveMaster()">Save master content</button>
-          <button class="btn btn-blue" onclick="pushToHospitable(getMasterPayload())">Push master to Hospitable →</button>
+          <button class="btn btn-amber" onclick="copyForHospitable(getMasterPayload())">Copy for Hospitable →</button>
         </div>
 
         <div class="variation-section">
@@ -297,7 +303,7 @@ function renderEditor() {
                 <div class="history-item">
                   <span class="badge badge-${v.intensity}">${v.intensity}</span>
                   <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(v.title)}</span>
-                  <button class="btn btn-ghost btn-sm" onclick='pushToHospitable(${JSON.stringify(v)})'>Push</button>
+                  <button class="btn btn-amber btn-sm" onclick='copyForHospitable(${JSON.stringify(v)})'>Copy</button>
                 </div>
               `).join('')}
             </div>
@@ -390,18 +396,16 @@ function renderVariationOutput(v) {
       </div>
       <div class="variation-sections">${previewSections}</div>
       <div class="variation-actions">
-        <button class="btn btn-green" onclick='pushToHospitable(${JSON.stringify(v)})'>Push to Hospitable →</button>
+        <button class="btn btn-amber" onclick='copyForHospitable(${JSON.stringify(v)})'>Copy for Hospitable →</button>
         <button class="btn btn-ghost" onclick="copyVariation()">Copy text</button>
       </div>
     </div>
   `;
 }
 
-// ── Push to Hospitable ────────────────────────────────────────────────────────
-async function pushToHospitable(payload) {
-  if (!payload?.title) { showToast('No content to push', 'error'); return; }
-  const name = vaultData[selectedId]?.master?.propertyName || selectedId;
-  if (!confirm(`Push to Hospitable for "${name}"?\n\nTitle: ${payload.title}`)) return;
+// ── Copy for Hospitable (API has no listing-content write endpoint) ───────────
+async function copyForHospitable(payload) {
+  if (!payload?.title) { showToast('No content to copy', 'error'); return; }
   try {
     const res  = await fetch(`/api/vault/${selectedId}/push`, {
       method: 'POST',
@@ -410,9 +414,35 @@ async function pushToHospitable(payload) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    showToast('Pushed to Hospitable ✓ — Airbnb will sync shortly', 'success');
+
+    // Copy to clipboard
+    await navigator.clipboard.writeText(data.clipboard);
+    showToast('Copied to clipboard ✓', 'success');
+
+    // Show inline copy panel with paste instructions
+    const panelId = 'copy-panel-main';
+    const existing = document.getElementById(panelId);
+    if (existing) existing.remove();
+
+    const panel = document.createElement('div');
+    panel.id = panelId;
+    panel.className = 'copy-panel';
+    panel.innerHTML = `
+      <div class="copy-panel-header">
+        <span class="copy-panel-label">⚠ Paste manually into Hospitable</span>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('${panelId}').remove()">✕</button>
+      </div>
+      <textarea readonly>${esc(data.clipboard)}</textarea>
+      <div class="copy-notice">
+        The Hospitable public API does not expose a write endpoint for listing content
+        (confirmed from their OpenAPI spec — only calendar pricing is writable).
+        Copy the text above and paste each section into <strong>Hospitable → Properties → Edit listing</strong>.
+        <br>Contact Hospitable to request a listing-content write endpoint.
+      </div>
+    `;
+    document.querySelector('.action-row').after(panel);
   } catch(e) {
-    showToast('Push failed: ' + e.message, 'error');
+    showToast('Error: ' + e.message, 'error');
   }
 }
 
