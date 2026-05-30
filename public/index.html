@@ -162,10 +162,11 @@
 <script>
 let data = { pending: [], log: [], settings: {} };
 const todayStart = new Date().setHours(0,0,0,0);
+const AUTH_HEADER = { 'Authorization': 'Bearer 51419b9c8d371fca2c641965952729276fef5f82cbc38a27f3eb9ca708b600d2' };
 
 async function load() {
   try {
-    const res = await fetch('/api/queue');
+    const res = await fetch('/api/queue', { headers: AUTH_HEADER });
     data = await res.json();
     render();
     document.getElementById('statusDot').style.background = '#3ecf8e';
@@ -254,13 +255,13 @@ function esc(str) {
 
 async function cancel(id) {
   if (!confirm('Cancel this reply?')) return;
-  await fetch('/api/cancel/' + id, { method: 'POST' });
+  await fetch('/api/cancel/' + id, { method: 'POST', headers: AUTH_HEADER });
   load();
 }
 
 async function saveEdit(id) {
   const reply = document.getElementById('reply-' + id).value;
-  await fetch('/api/edit/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ reply }) });
+  await fetch('/api/edit/' + id, { method: 'POST', headers: { ...AUTH_HEADER, 'Content-Type': 'application/json' }, body: JSON.stringify({ reply }) });
   const btn = event.currentTarget;
   btn.textContent = 'Saved ✓'; btn.style.background = '#1a3d2f';
   setTimeout(() => { btn.textContent = 'Save edit'; btn.style.background = ''; }, 1500);
@@ -268,8 +269,8 @@ async function saveEdit(id) {
 
 async function sendNow(id) {
   const reply = document.getElementById('reply-' + id).value;
-  await fetch('/api/edit/' + id, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ reply }) });
-  await fetch('/api/send-now/' + id, { method: 'POST' });
+  await fetch('/api/edit/' + id, { method: 'POST', headers: { ...AUTH_HEADER, 'Content-Type': 'application/json' }, body: JSON.stringify({ reply }) });
+  await fetch('/api/send-now/' + id, { method: 'POST', headers: AUTH_HEADER });
   load();
 }
 

@@ -159,6 +159,7 @@
 let vaultData = {};
 let selectedId = null;
 let currentVariation = null;
+const AUTH_HEADER = { 'Authorization': 'Bearer 51419b9c8d371fca2c641965952729276fef5f82cbc38a27f3eb9ca708b600d2' };
 
 // ── Field definitions for each Airbnb listing section ────────────────────────
 const SECTIONS = [
@@ -173,7 +174,7 @@ const SECTIONS = [
 // ── Load ─────────────────────────────────────────────────────────────────────
 async function load() {
   try {
-    const vaultRes = await fetch('/api/vault').then(r => r.json());
+    const vaultRes = await fetch('/api/vault', { headers: AUTH_HEADER }).then(r => r.json());
     vaultData = {};
     (vaultRes.vault || []).forEach(e => vaultData[e.id] = e);
     renderSidebar();
@@ -187,7 +188,7 @@ async function importFromHospitable() {
   btn.innerHTML = '<span class="spinner"></span>Importing...';
   btn.disabled = true;
   try {
-    const res  = await fetch('/api/vault/import/hospitable', { method: 'POST' });
+    const res  = await fetch('/api/vault/import/hospitable', { method: 'POST', headers: AUTH_HEADER });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showToast(`Imported ${data.imported.length} properties ✓`, 'success');
@@ -337,7 +338,7 @@ async function saveMaster() {
 
   const res = await fetch(`/api/vault/${selectedId}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...AUTH_HEADER, 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
   if (res.ok) {
@@ -362,7 +363,7 @@ async function generateVariation(intensity) {
   try {
     const res  = await fetch(`/api/vault/${selectedId}/variation`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...AUTH_HEADER, 'Content-Type': 'application/json' },
       body: JSON.stringify({ intensity }),
     });
     const data = await res.json();
@@ -409,7 +410,7 @@ async function copyForHospitable(payload) {
   try {
     const res  = await fetch(`/api/vault/${selectedId}/push`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...AUTH_HEADER, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     const data = await res.json();
