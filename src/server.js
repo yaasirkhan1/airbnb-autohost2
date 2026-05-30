@@ -393,3 +393,85 @@ app.listen(PORT, () => {
   // Start learning profiles after 3 second startup delay
   setTimeout(initAllPropertyProfiles, 3000);
 });
+
+// ─── Vault routes ─────────────────────────────────────────────────────────────
+
+const vault = require('./vault');
+
+// Get full vault
+app.get('/api/vault', (req, res) => {
+  res.json({ vault: vault.getVault() });
+});
+
+// Get single vault entry
+app.get('/api/vault/:propertyId', (req, res) => {
+  const entry = vault.getVaultEntry(req.params.propertyId);
+  if (!entry) return res.status(404).json({ error: 'Not in vault' });
+  res.json(entry);
+});
+
+// Save/update master content
+app.post('/api/vault/:propertyId', (req, res) => {
+  const { title, description, houseRules, customNotes, propertyName } = req.body;
+  if (!title || !description) return res.status(400).json({ error: 'title and description required' });
+  vault.saveToVault(req.params.propertyId, { title, description, houseRules, customNotes, propertyName });
+  res.json({ ok: true });
+});
+
+// Auto-import from Hospitable into vault
+app.post('/api/vault/import/hospitable', async (req, res) => {
+  try {
+    const data = await hospGet('/properties?page[size]=50');
+    const properties = data.data || [];
+    const imported = [];
+    for (const p of properties) {
+      const id = p.id;
+      const name = p.attributes?.name || id;
+      const title = p.attributes?.name || '';
+      const description = p.attributes?.description || p.attributes?.summary || '';
+      const houseRules = p.attributes?.house_rules || '';
+      if (title || description) {
+        vault.saveToVault(id, { title, description, houseRules, propertyName: name });
+        imported.push(name);
+      }
+    }
+    res.json({ ok: true, imported });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Generate a variation
+app.post('/api/vault/:propertyId/variation', async (req, res) => {
+  const { intensity } = req.body; // light | medium | heavy
+  try {
+    const variation = await vault.generateVariation(req.params.propertyId, intensity || 'medium', callClaude);
+    res.json({ ok: true, variation });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Push a variation (or master) to Hospitable
+app.post('/api/vault/:propertyId/push', async (req, res) => {
+  const { title, description, houseRules } = req.body;
+  const propertyId = req.params.propertyId;
+  try {
+    const r = await fetch(`https://public.api.hospitable.com/v2/properties/${propertyId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${process.env.HOSPITABLE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({ data: { attributes: { name: title, description, house_rules: houseRules } } }),
+    });
+    if (!r.ok) {
+      const err = await r.text();
+      throw new Error(`Hospitable ${r.status}: ${err}`);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
