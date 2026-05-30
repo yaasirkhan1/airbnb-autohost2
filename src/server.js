@@ -166,7 +166,7 @@ async function initAllPropertyProfiles() {
       const id = p.id;
       const name = p.public_name || p.name || id;
       await learnPropertyProfile(id, name);
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 200));
     }
     console.log('[learn] ✅ All property profiles ready');
   } catch (e) {
