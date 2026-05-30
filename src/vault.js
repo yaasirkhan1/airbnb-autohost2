@@ -1,7 +1,39 @@
 // ─── Listing Vault ────────────────────────────────────────────────────────────
-// Stores master listing content and generates Claude-powered variations
+// Stores master listing content and generates Claude-powered variations.
+// Data is persisted to DATA_DIR/vault.json and reloaded on startup.
+
+const fs   = require('fs');
+const path = require('path');
+
+const DATA_DIR  = process.env.DATA_DIR || path.join(__dirname, '../data');
+const VAULT_PATH = path.join(DATA_DIR, 'vault.json');
 
 const vault = new Map(); // propertyId -> { master, variations[], updatedAt }
+
+// ─── Persistence ──────────────────────────────────────────────────────────────
+
+function persistVault() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(VAULT_PATH, JSON.stringify(Object.fromEntries(vault), null, 2));
+  } catch (e) {
+    console.error('[vault] Failed to persist:', e.message);
+  }
+}
+
+function loadVault() {
+  try {
+    if (fs.existsSync(VAULT_PATH)) {
+      const entries = JSON.parse(fs.readFileSync(VAULT_PATH, 'utf8'));
+      for (const [id, data] of Object.entries(entries)) vault.set(id, data);
+      console.log(`[vault] Loaded ${vault.size} entr${vault.size === 1 ? 'y' : 'ies'} from disk`);
+    }
+  } catch (e) {
+    console.error('[vault] Failed to load from disk:', e.message);
+  }
+}
+
+// ─── CRUD ─────────────────────────────────────────────────────────────────────
 
 function getVault() {
   return Array.from(vault.entries()).map(([id, data]) => ({ id, ...data }));
@@ -14,6 +46,7 @@ function getVaultEntry(propertyId) {
 function saveToVault(propertyId, master) {
   const existing = vault.get(propertyId) || { variations: [] };
   vault.set(propertyId, { ...existing, master, updatedAt: Date.now() });
+  persistVault();
 }
 
 function saveVariation(propertyId, variation) {
@@ -22,7 +55,52 @@ function saveVariation(propertyId, variation) {
   entry.variations = entry.variations || [];
   entry.variations.unshift({ ...variation, createdAt: Date.now() });
   if (entry.variations.length > 20) entry.variations.pop();
+  persistVault();
 }
+
+// ─── Claude: split a combined description into sections ───────────────────────
+
+async function splitDescription(rawDescription, propertyName, callClaude) {
+  if (!rawDescription?.trim()) return {};
+
+  const prompt = `You are analyzing an Airbnb property listing description and splitting it into the standard Airbnb listing sections.
+
+Analyze the text carefully and distribute the content into these sections:
+- summary: The main 2-3 sentence hook introducing the property overall
+- the_space: Description of the physical space — rooms, layout, furnishings, decor
+- guest_access: What areas, amenities, or rooms guests can use
+- neighborhood: The surrounding area, nearby attractions, local character
+- getting_around: Transport options — parking, transit, walkability
+- other_notes: Any remaining useful guest information that doesn't fit above
+
+Rules:
+- Never invent details not present in the original text
+- If content for a section genuinely cannot be found, return "" for that key
+- summary must always be populated if there is any content at all
+- Preserve the original wording as closely as possible; just re-categorise
+
+Return ONLY valid JSON with exactly these keys, no markdown fences, no explanation:
+{
+  "summary": "",
+  "the_space": "",
+  "guest_access": "",
+  "neighborhood": "",
+  "getting_around": "",
+  "other_notes": ""
+}`;
+
+  const userMsg = `Property: "${propertyName}"\n\nCombined description to split into sections:\n\n${rawDescription}`;
+
+  const raw = await callClaude(prompt, userMsg, 1500);
+  try {
+    const clean = raw.replace(/```json|```/g, '').trim();
+    return JSON.parse(clean);
+  } catch (e) {
+    throw new Error('Claude returned invalid JSON while splitting description');
+  }
+}
+
+// ─── Claude: generate a listing variation ────────────────────────────────────
 
 async function generateVariation(propertyId, intensity, callClaude) {
   const entry = vault.get(propertyId);
@@ -103,4 +181,7 @@ Generate a ${intensity} variation:`;
   return variation;
 }
 
-module.exports = { getVault, getVaultEntry, saveToVault, saveVariation, generateVariation };
+// Load persisted data on startup
+loadVault();
+
+module.exports = { getVault, getVaultEntry, saveToVault, saveVariation, splitDescription, generateVariation };

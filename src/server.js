@@ -446,22 +446,43 @@ app.post('/api/vault/import/hospitable', async (req, res) => {
     const data = await hospGet('/properties?per_page=50');
     const properties = parseProperties(data);
     const imported = [];
+
     for (const p of properties) {
-      const id = p.id;
-      const name = p.public_name || p.name || id;
+      const id    = p.id;
+      const name  = p.public_name || p.name || id;
       const title = p.public_name || p.name || '';
-      const summary = p.description || p.summary || '';
-      const the_space = p.space_overview || p.the_space || '';
-      const guest_access = p.guest_access || p.access || '';
-      const neighborhood = p.neighborhood_description || p.neighborhood_overview || p.directions || '';
-      const getting_around = p.getting_around || p.transit || '';
-      const other_notes = p.other_details || p.other_notes || p.notes || '';
-      const houseRules = formatHouseRules(p.house_rules);
-      if (title || summary) {
-        vault.saveToVault(id, { title, summary, the_space, guest_access, neighborhood, getting_around, other_notes, houseRules, propertyName: name });
-        imported.push(name);
+      const rawDescription = p.description || p.summary || '';
+
+      // Fields Hospitable may return pre-split (usually empty for basic accounts)
+      const the_space      = p.space_overview            || p.the_space   || '';
+      const guest_access   = p.guest_access              || p.access      || '';
+      const neighborhood   = p.neighborhood_description  || p.neighborhood_overview || p.directions || '';
+      const getting_around = p.getting_around            || p.transit     || '';
+      const other_notes    = p.other_details             || p.other_notes || p.notes || '';
+      const houseRules     = formatHouseRules(p.house_rules);
+
+      if (!title && !rawDescription) continue;
+
+      // If Hospitable returned no split sections, ask Claude to split the description
+      const hasAnySections = the_space || guest_access || neighborhood || getting_around || other_notes;
+      let sections = { summary: rawDescription, the_space, guest_access, neighborhood, getting_around, other_notes };
+
+      if (rawDescription && !hasAnySections) {
+        try {
+          console.log(`[import] Splitting description for "${name}" with Claude...`);
+          sections = await vault.splitDescription(rawDescription, name, callClaude);
+          // Ensure summary is populated even if Claude left it empty
+          if (!sections.summary) sections.summary = rawDescription;
+        } catch (e) {
+          console.error(`[import] Split failed for "${name}":`, e.message);
+          sections = { summary: rawDescription, the_space: '', guest_access: '', neighborhood: '', getting_around: '', other_notes: '' };
+        }
       }
+
+      vault.saveToVault(id, { title, ...sections, houseRules, propertyName: name });
+      imported.push(name);
     }
+
     res.json({ ok: true, imported });
   } catch (e) {
     res.status(500).json({ error: e.message });
