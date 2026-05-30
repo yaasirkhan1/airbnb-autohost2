@@ -1,7 +1,7 @@
 const express    = require('express');
 const crypto     = require('crypto');
 const path       = require('path');
-const nodemailer = require('nodemailer');
+const twilio = require('twilio');
 const vault      = require('./vault');
 
 const app = express();
@@ -402,52 +402,28 @@ async function callClaude(systemPrompt, userMsg, maxTokens = 800) {
 
 // ─── Host notifications ───────────────────────────────────────────────────────
 
-async function notifyHost({ guestName, messageBody, propertyName, draftedReply }) {
-  const notifyEmail = process.env.NOTIFY_EMAIL;
-  const smtpUser    = process.env.SMTP_USER;
-  const smtpPass    = process.env.SMTP_PASS;
-
+async function notifyHost({ guestName, messageBody, propertyName }) {
   const logLine = `[notify] ⚠ MANUAL REPLY NEEDED — Guest: "${guestName}" | Property: "${propertyName}" | Message: "${messageBody.slice(0, 120)}"`;
 
-  if (!notifyEmail || !smtpUser || !smtpPass) {
-    // Always log clearly so Railway shows it even without email configured
+  const sid   = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from  = process.env.TWILIO_FROM_NUMBER;
+  const to    = process.env.NOTIFY_PHONE;
+
+  if (!sid || !token || !from || !to) {
     console.warn(logLine);
-    console.warn('[notify] Set NOTIFY_EMAIL, SMTP_USER, SMTP_PASS to receive email alerts.');
+    console.warn('[notify] Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, NOTIFY_PHONE to receive SMS alerts.');
     return;
   }
 
+  const smsBody = `⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Their message: "${messageBody.slice(0, 100)}"`;
+
   try {
-    const transporter = nodemailer.createTransporter({
-      host:   process.env.SMTP_HOST   || 'smtp.gmail.com',
-      port:   parseInt(process.env.SMTP_PORT || '587'),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth:   { user: smtpUser, pass: smtpPass },
-    });
-
-    await transporter.sendMail({
-      from:    `"AutoHost" <${smtpUser}>`,
-      to:      notifyEmail,
-      subject: `⚠ Manual reply needed — ${guestName} at ${propertyName}`,
-      text: [
-        `A guest message needs your personal attention.`,
-        ``,
-        `Guest:    ${guestName}`,
-        `Property: ${propertyName}`,
-        ``,
-        `Their message:`,
-        messageBody,
-        ``,
-        `AutoHost's holding reply (already sent):`,
-        draftedReply,
-        ``,
-        `Please reply to them directly in Hospitable or Airbnb.`,
-      ].join('\n'),
-    });
-
-    console.log(`[notify] Email alert sent to ${notifyEmail} for "${guestName}"`);
+    const client = twilio(sid, token);
+    await client.messages.create({ body: smsBody, from, to });
+    console.log(`[notify] SMS sent to ${to} for "${guestName}"`);
   } catch (e) {
-    // Email failed — still log so it's visible in Railway
-    console.error(`[notify] Email failed (${e.message}) — ${logLine}`);
+    console.error(`[notify] SMS failed (${e.message}) — ${logLine}`);
   }
 }
 
