@@ -182,7 +182,7 @@ async function initAllPropertyProfiles() {
   }
 
   // Start polling after warm-up so only truly new messages trigger replies
-  pollingSince = new Date().toISOString();
+  pollingSince = toHospitableDate(new Date());
   setInterval(pollForNewMessages, 60 * 1000);
   console.log(`[poll] Polling started — checking every 60s (since ${pollingSince})`);
 }
@@ -221,7 +221,7 @@ async function pollForNewMessages() {
 
 async function pollReservationMessages() {
   try {
-    const since = new Date(Date.now() - 90 * 1000).toISOString();
+    const since = toHospitableDate(new Date(Date.now() - 90 * 1000));
     const qs    = buildPropertyQs();
     const data  = await hospGet(`/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
     const reservations = parseReservations(data);
@@ -251,7 +251,7 @@ async function pollInquiryMessages() {
   if (inquiriesUnavailable) return;
 
   try {
-    const since = new Date(Date.now() - 90 * 1000).toISOString();
+    const since = toHospitableDate(new Date(Date.now() - 90 * 1000));
     const data  = await hospGet(`/inquiries?last_message_at=${encodeURIComponent(since)}&per_page=50`);
     const inquiries = parseInquiries(data);
 
@@ -343,6 +343,12 @@ function messageKey(reservationId, msg) {
   // platform_id is the channel-native message ID (most stable unique key)
   if (msg.platform_id) return `${reservationId}:${msg.platform_id}`;
   return `${reservationId}:${msg.created_at}`;
+}
+
+// Hospitable API requires last_message_at in PHP "Y-m-d H:i:s" format,
+// not ISO 8601 — i.e. "2026-05-30 12:34:56" with a space, no T, no ms, no Z.
+function toHospitableDate(date) {
+  return date.toISOString().replace('T', ' ').slice(0, 19);
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
