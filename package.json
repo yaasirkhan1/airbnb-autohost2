@@ -1,0 +1,16 @@
+{
+  "name": "airbnb-autohost",
+  "version": "1.0.0",
+  "description": "24/7 Airbnb auto-reply agent powered by Claude",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
