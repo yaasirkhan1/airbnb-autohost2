@@ -762,19 +762,31 @@ app.get('/api/pricing', async (req, res) => {
     for (const p of properties) {
       try {
         const calData = await hospGet(`/properties/${p.id}/calendar?start_date=${start}&end_date=${end}`);
-        // Return raw so we can inspect the actual API shape
-        const days = Array.isArray(calData) ? calData
-          : Array.isArray(calData?.data) ? calData.data
-          : Array.isArray(calData?.days) ? calData.days
-          : [];
+        // Expose raw top-level shape for debugging
+        const rawTopKeys = typeof calData === 'object' && calData ? Object.keys(calData) : [];
+        const rawDataVal = calData?.data;
+        // Calendar can be: array, {data:[...]}, {data:{"date":{...}}}, or {"date":{...}} directly
+        let days;
+        if (Array.isArray(calData)) {
+          days = calData;
+        } else if (Array.isArray(rawDataVal)) {
+          days = rawDataVal;
+        } else if (rawDataVal && typeof rawDataVal === 'object') {
+          days = Object.entries(rawDataVal).map(([date, v]) => ({ date, ...v }));
+        } else if (typeof calData === 'object' && calData) {
+          // top-level date-keyed object
+          days = Object.entries(calData).map(([date, v]) => ({ date, ...v }));
+        } else {
+          days = [];
+        }
         results.push({
-          id:       p.id,
-          name:     p.public_name || p.name,
-          raw_keys: days[0] ? Object.keys(days[0]) : [],
+          id:         p.id,
+          name:       p.public_name || p.name,
           raw_sample: days[0] || null,
-          days:     days.map(d => ({
-            date:      d.date || d.day || d.Date || null,
+          days:       days.map(d => ({
+            date:      d.date || d.Date || null,
             price:     d.price?.amount != null ? d.price.amount / 100
+                     : typeof d.price === 'number' ? d.price / 100
                      : d.price?.formatted || d.nightly_price || d.rate || null,
             available: d.status?.available ?? d.available ?? null,
             min_stay:  d.min_stay || null,
