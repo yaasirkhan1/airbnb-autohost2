@@ -891,18 +891,37 @@ app.get('/api/pricing/probe', async (req, res) => {
     }
     await new Promise(r => setTimeout(r, 300));
   }
-  // Also fetch the full property record to see pricing metadata
-  let propRecord = null;
-  try {
-    const pr = await fetch(`https://public.api.hospitable.com/v2/properties/${propId}`, {
-      headers: { Authorization: `Bearer ${process.env.HOSPITABLE_API_KEY}`, Accept: 'application/json' },
-    });
-    propRecord = await pr.json();
-  } catch (e) {
-    propRecord = { error: e.message };
+  // Fetch property record + sub-endpoints that might expose pricing control
+  const hdrs = { Authorization: `Bearer ${process.env.HOSPITABLE_API_KEY}`, Accept: 'application/json' };
+  const extras = {};
+  const extraPaths = [
+    'base',
+    'base_with_includes',
+    'settings',
+    'integrations',
+    'pricing',
+    'channels',
+  ];
+  const extraUrls = {
+    base:              `/v2/properties/${propId}`,
+    base_with_includes:`/v2/properties/${propId}?include=integrations,settings,pricing,channels`,
+    settings:          `/v2/properties/${propId}/settings`,
+    integrations:      `/v2/properties/${propId}/integrations`,
+    pricing:           `/v2/properties/${propId}/pricing`,
+    channels:          `/v2/properties/${propId}/channels`,
+  };
+  for (const [key, path] of Object.entries(extraUrls)) {
+    try {
+      const r = await fetch(`https://public.api.hospitable.com${path}`, { headers: hdrs });
+      const text = await r.text();
+      extras[key] = { status: r.status, body: text };
+    } catch (e) {
+      extras[key] = { error: e.message };
+    }
+    await new Promise(r => setTimeout(r, 200));
   }
 
-  res.json({ property_id: propId, property_record: propRecord, put_results: out });
+  res.json({ property_id: propId, extra_endpoints: extras, put_results: out });
 });
 
 app.post('/api/notify', async (req, res) => {
