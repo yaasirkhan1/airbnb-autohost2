@@ -748,6 +748,45 @@ app.post('/api/relearn/:propertyId', async (req, res) => {
 });
 
 // Manually trigger a host notification (also called automatically when Claude is uncertain)
+// Fetch calendar pricing for all properties over a date range
+// GET /api/pricing?start=2026-06-11&end=2026-07-19
+app.get('/api/pricing', async (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end query params required (YYYY-MM-DD)' });
+  try {
+    // Fetch all properties to get names + IDs
+    const propData = await hospGet('/properties?per_page=50');
+    const properties = parseProperties(propData);
+
+    const results = [];
+    for (const p of properties) {
+      try {
+        const calData = await hospGet(`/properties/${p.id}/calendar?start_date=${start}&end_date=${end}`);
+        const days = Array.isArray(calData) ? calData
+          : Array.isArray(calData?.data) ? calData.data
+          : Object.values(calData?.data || calData || {});
+        results.push({
+          id:     p.id,
+          name:   p.public_name || p.name,
+          days:   days.map(d => ({
+            date:      d.date,
+            price:     d.price?.amount != null ? d.price.amount / 100 : (d.price?.formatted || null),
+            currency:  d.price?.currency || 'USD',
+            available: d.status?.available ?? d.available ?? null,
+            min_stay:  d.min_stay || null,
+          })),
+        });
+        await new Promise(r => setTimeout(r, 150)); // rate limit buffer
+      } catch (e) {
+        results.push({ id: p.id, name: p.public_name || p.name, error: e.message });
+      }
+    }
+    res.json({ start, end, properties: results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/notify', async (req, res) => {
   const { guestName = 'Unknown', messageBody = '', propertyName = 'Unknown', draftedReply = '' } = req.body;
   try {
