@@ -1,7 +1,8 @@
-const express = require('express');
-const crypto = require('crypto');
-const path = require('path');
-const vault = require('./vault');
+const express    = require('express');
+const crypto     = require('crypto');
+const path       = require('path');
+const nodemailer = require('nodemailer');
+const vault      = require('./vault');
 
 const app = express();
 app.use(express.json());
@@ -320,8 +321,12 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       console.log(`[poll/${tag}] using profile: ${propertyProfiles.has(propertyId)}`);
 
       try {
-        const draft = await draftReply(guestName, body, propertyName, propertyId);
-        scheduleReply(resourceId, guestName, body, draft, propertyName, propertyId, resourceType);
+        const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId);
+        if (!confident) {
+          console.log(`[poll/${tag}] Not confident — sending holding reply + notifying host`);
+          notifyHost({ guestName, messageBody: body, propertyName, draftedReply: reply }).catch(console.error);
+        }
+        scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
       } catch (e) {
         console.error(`[poll/${tag}] Error drafting reply: ${e.message}`);
       }
@@ -395,6 +400,57 @@ async function callClaude(systemPrompt, userMsg, maxTokens = 800) {
   return data.content?.[0]?.text || '';
 }
 
+// ─── Host notifications ───────────────────────────────────────────────────────
+
+async function notifyHost({ guestName, messageBody, propertyName, draftedReply }) {
+  const notifyEmail = process.env.NOTIFY_EMAIL;
+  const smtpUser    = process.env.SMTP_USER;
+  const smtpPass    = process.env.SMTP_PASS;
+
+  const logLine = `[notify] ⚠ MANUAL REPLY NEEDED — Guest: "${guestName}" | Property: "${propertyName}" | Message: "${messageBody.slice(0, 120)}"`;
+
+  if (!notifyEmail || !smtpUser || !smtpPass) {
+    // Always log clearly so Railway shows it even without email configured
+    console.warn(logLine);
+    console.warn('[notify] Set NOTIFY_EMAIL, SMTP_USER, SMTP_PASS to receive email alerts.');
+    return;
+  }
+
+  try {
+    const transporter = nodemailer.createTransporter({
+      host:   process.env.SMTP_HOST   || 'smtp.gmail.com',
+      port:   parseInt(process.env.SMTP_PORT || '587'),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth:   { user: smtpUser, pass: smtpPass },
+    });
+
+    await transporter.sendMail({
+      from:    `"AutoHost" <${smtpUser}>`,
+      to:      notifyEmail,
+      subject: `⚠ Manual reply needed — ${guestName} at ${propertyName}`,
+      text: [
+        `A guest message needs your personal attention.`,
+        ``,
+        `Guest:    ${guestName}`,
+        `Property: ${propertyName}`,
+        ``,
+        `Their message:`,
+        messageBody,
+        ``,
+        `AutoHost's holding reply (already sent):`,
+        draftedReply,
+        ``,
+        `Please reply to them directly in Hospitable or Airbnb.`,
+      ].join('\n'),
+    });
+
+    console.log(`[notify] Email alert sent to ${notifyEmail} for "${guestName}"`);
+  } catch (e) {
+    // Email failed — still log so it's visible in Railway
+    console.error(`[notify] Email failed (${e.message}) — ${logLine}`);
+  }
+}
+
 // ─── Reply drafting ───────────────────────────────────────────────────────────
 
 function findSimilarExamples(propertyId, guestMessage, count = 3) {
@@ -416,7 +472,24 @@ async function draftReply(guestName, messageBody, propertyName, propertyId) {
 
   let systemPrompt;
 
-  const ANSWER_FIRST = `CRITICAL RULE: Your very first sentence must directly answer or address the guest's specific question. Do NOT open with pleasantries, check-in times, or unrelated information unless the guest explicitly asked about those things. If you don't know the answer, say so clearly rather than pivoting to something else.`;
+  const JSON_INSTRUCTIONS = `
+You MUST respond with a single valid JSON object — no markdown fences, no extra text:
+{
+  "confident": true or false,
+  "reply": "the message to send the guest"
+}
+
+Confidence rules:
+- Set "confident": true when you can answer fully from the information provided.
+- Set "confident": false when you genuinely don't know the answer (e.g. specific codes, policies not in your context, third-party details).
+- When not confident, set "reply" to a warm holding message such as: "Great question! Let me check on that and get back to you shortly 😊"
+- NEVER invent facts. If unsure, be honest with the holding message.
+
+Reply style rules:
+- Open with a brief warm greeting (e.g. "Hi [Name]!"), then immediately answer the question.
+- Do NOT lead with check-in details, house rules, or unrelated information unless the guest asked.
+- Be concise (2–4 sentences) unless the question genuinely needs more.
+- No sign-off or signature.`;
 
   if (profileData?.profile) {
     const exampleBlock = examples.length
@@ -426,9 +499,7 @@ async function draftReply(guestName, messageBody, propertyName, propertyId) {
 
     systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host replying to a guest at "${propertyName}".
 
-${ANSWER_FIRST}
-
-HOST COMMUNICATION PROFILE (learned from real message history — match this style):
+HOST COMMUNICATION PROFILE (learned from real messages — match this style precisely):
 ${profileData.profile}
 
 PROPERTY DETAILS:
@@ -437,25 +508,30 @@ PROPERTY DETAILS:
 - House rules: ${HOST_SETTINGS.houseRules}
 ${HOST_SETTINGS.extraContext ? `- Extra context: ${HOST_SETTINGS.extraContext}` : ''}
 ${exampleBlock}
-
-Additional rules:
-- Be concise (2-4 sentences) unless the question genuinely needs more
-- Never make up information you don't have
-- No sign-off or signature needed`;
+${JSON_INSTRUCTIONS}`;
   } else {
     systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style.
-
-${ANSWER_FIRST}
 
 Property: ${propertyName}
 Check-in: ${HOST_SETTINGS.checkin} | Check-out: ${HOST_SETTINGS.checkout}
 House rules: ${HOST_SETTINGS.houseRules}
 ${HOST_SETTINGS.extraContext ? `Context: ${HOST_SETTINGS.extraContext}` : ''}
-
-Keep replies concise (2-4 sentences). Never make up information.`;
+${JSON_INSTRUCTIONS}`;
   }
 
-  return callClaude(systemPrompt, `Guest ${guestName} says: "${messageBody}"`, 500);
+  const raw = await callClaude(systemPrompt, `Guest ${guestName} says: "${messageBody}"`, 600);
+
+  try {
+    const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    return {
+      reply:     parsed.reply    || raw,
+      confident: parsed.confident !== false,
+    };
+  } catch (e) {
+    // Claude didn't return valid JSON — treat whole response as reply, assume confident
+    console.warn('[draft] Claude returned non-JSON — using raw text:', raw.slice(0, 100));
+    return { reply: raw, confident: true };
+  }
 }
 
 // ─── Webhook ──────────────────────────────────────────────────────────────────
@@ -550,9 +626,13 @@ app.post('/webhook/hospitable', async (req, res) => {
   }
 
   try {
-    const draft = await draftReply(guestName, messageBody, propertyName, propertyId);
-    scheduleReply(replyResourceId, guestName, messageBody, draft, propertyName, propertyId, replyResourceType);
-    console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
+    const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId);
+    if (!confident) {
+      console.log(`[webhook] Not confident — sending holding reply + notifying host`);
+      notifyHost({ guestName, messageBody, propertyName, draftedReply: reply }).catch(console.error);
+    }
+    scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
+    console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId} (confident=${confident})`);
   } catch (err) {
     console.error('[webhook] Error drafting reply:', err.message);
   }
@@ -683,6 +763,17 @@ app.post('/api/relearn/:propertyId', async (req, res) => {
   learnPropertyProfile(propertyId, name).catch(console.error);
 });
 
+// Manually trigger a host notification (also called automatically when Claude is uncertain)
+app.post('/api/notify', async (req, res) => {
+  const { guestName = 'Unknown', messageBody = '', propertyName = 'Unknown', draftedReply = '' } = req.body;
+  try {
+    await notifyHost({ guestName, messageBody, propertyName, draftedReply });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/health', (req, res) => res.json({
   ok: true,
   pending: pendingReplies.size,
@@ -732,9 +823,9 @@ app.post('/webhook/test', async (req, res) => {
   const messageBody = msg.body;
   const conversationId = msg.conversation_id;
   try {
-    const draft = await draftReply(guestName, messageBody, 'Test Property', null);
-    scheduleReply(conversationId, guestName, messageBody, draft, 'Test Property', null);
-    res.json({ ok: true, draft, conversationId });
+    const { reply, confident } = await draftReply(guestName, messageBody, 'Test Property', null);
+    scheduleReply(conversationId, guestName, messageBody, reply, 'Test Property', null);
+    res.json({ ok: true, draft: reply, confident, conversationId });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
