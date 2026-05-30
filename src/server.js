@@ -126,7 +126,7 @@ Return a detailed profile in plain text under these headings:
 async function initAllPropertyProfiles() {
   try {
     console.log('[learn] Fetching all properties...');
-    const data = await hospGet('/properties?per_page=50');
+    const data = await hospGet('/properties?page[size]=50');
     const properties = data.data || [];
     console.log(`[learn] Found ${properties.length} properties — building profiles...`);
     for (const p of properties) {
@@ -421,7 +421,7 @@ app.post('/api/vault/:propertyId', (req, res) => {
 // Auto-import from Hospitable into vault
 app.post('/api/vault/import/hospitable', async (req, res) => {
   try {
-    const data = await hospGet('/properties?per_page=50');
+    const data = await hospGet('/properties?page[size]=50');
     const properties = data.data || [];
     const imported = [];
     for (const p of properties) {
