@@ -475,16 +475,19 @@ app.post('/webhook/hospitable', async (req, res) => {
 
   console.log('[webhook] data keys:', Object.keys(msg).join(', '));
 
-  const senderType = msg.sender_type;
-  if (senderType === 'host') { console.log('[webhook] sender_type=host — ignoring'); return; }
+  const senderRole = msg.sender_role;
+  if (senderRole === 'host' || senderRole === 'co-host' || senderRole === 'teammate') {
+    console.log(`[webhook] sender_role="${senderRole}" — ignoring`);
+    return;
+  }
 
   const conversationId = msg.conversation_id;
   const messageBody    = (msg.body || '').trim();
   const guestName      = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
-  const reservationId  = msg.reservation_id  || null;
-  const inquiryId      = msg.inquiry_id       || null; // present on pre-booking inquiries
+  const reservationId  = msg.reservation_id || null;
+  const inquiryId      = msg.inquiry_id     || null;
 
-  console.log(`[webhook] ✉ from="${guestName}" sender_type="${senderType}" reservation="${reservationId}" inquiry="${inquiryId}" convo="${conversationId}"`);
+  console.log(`[webhook] ✉ from="${guestName}" sender_role="${senderRole}" reservation="${reservationId}" inquiry="${inquiryId}" convo="${conversationId}"`);
   console.log(`[webhook] body: "${messageBody.slice(0, 120)}"`);
 
   if (!messageBody) { console.log('[webhook] empty body — ignoring'); return; }
