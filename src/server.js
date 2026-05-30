@@ -853,7 +853,7 @@ app.put('/api/pricing', async (req, res) => {
   const results = [];
   for (const id of targetIds) {
     try {
-      await hospPut(`/properties/${id}/calendar`, { data: calDays });
+      await hospPut(`/properties/${id}/calendar`, { dates: { data: calDays } });
       results.push({ id, ok: true });
     } catch (e) {
       results.push({ id, ok: false, error: e.message });
