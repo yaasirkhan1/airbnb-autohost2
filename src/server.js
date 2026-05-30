@@ -605,7 +605,7 @@ async function sendToHospitable(resourceId, body, resourceType = 'reservation') 
 
 app.get('/api/queue', (req, res) => {
   const pending = Array.from(pendingReplies.values()).map(e => ({
-    id: e.id, reservationId: e.reservationId, guestName: e.guestName,
+    id: e.id, resourceId: e.resourceId, resourceType: e.resourceType, guestName: e.guestName,
     propertyName: e.propertyName, originalMessage: e.originalMessage,
     draftedReply: e.draftedReply, editedReply: e.editedReply,
     status: e.status, createdAt: e.createdAt, sendAt: e.sendAt,
