@@ -1,11 +1,20 @@
 const express    = require('express');
 const crypto     = require('crypto');
 const path       = require('path');
+const fs         = require('fs');
 const vault      = require('./vault');
 
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
+
+const API_SECRET = process.env.API_SECRET;
+app.use('/api/', (req, res, next) => {
+  if (!API_SECRET) return next(); // dev mode: skip if not set
+  const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
+  if (token !== API_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+});
 
 const pendingReplies = new Map();
 const replyLog = [];
@@ -537,7 +546,24 @@ ${JSON_INSTRUCTIONS}`;
 
 // ─── Webhook ──────────────────────────────────────────────────────────────────
 
-app.post('/webhook/hospitable', async (req, res) => {
+app.post('/webhook/hospitable', (req, res, next) => {
+  const secret = process.env.HOSPITABLE_WEBHOOK_SECRET;
+  if (secret) {
+    const sig = (req.headers['x-hospitable-signature'] || '').trim();
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
+    try {
+      if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+        return res.status(401).json({ error: 'Invalid webhook signature' });
+      }
+    } catch {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+  }
+  next();
+}, async (req, res) => {
   // Always 200 first so Hospitable never retries
   res.sendStatus(200);
 
@@ -864,65 +890,6 @@ app.put('/api/pricing', async (req, res) => {
   res.json({ updated: results.filter(r => r.ok).length, total: results.length, results });
 });
 
-// Probe: raw Hospitable calendar PUT with full response, no truncation
-// GET /api/pricing/probe?id=PROPERTY_UUID
-app.get('/api/pricing/probe', async (req, res) => {
-  const propId = req.query.id || '1af8fdde-58ee-426e-8374-6530397347e8'; // WC Apartment Premier
-  const day = { date: '2026-07-20', price: { amount: 19900 } };
-  const candidates = [
-    { label: 'plain_array',      body: [day] },
-    { label: 'dates_array',      body: { dates: [day] } },
-    { label: 'data_array',       body: { data: [day] } },
-    { label: 'dates_data_array', body: { dates: { data: [day] } } },
-  ];
-  const out = [];
-  for (const c of candidates) {
-    try {
-      const r = await fetch(`https://public.api.hospitable.com/v2/properties/${propId}/calendar`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${process.env.HOSPITABLE_API_KEY}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(c.body),
-      });
-      const text = await r.text();
-      // Return full body, no truncation
-      out.push({ label: c.label, status: r.status, body: text });
-    } catch (e) {
-      out.push({ label: c.label, error: e.message });
-    }
-    await new Promise(r => setTimeout(r, 300));
-  }
-  // Fetch property record + sub-endpoints that might expose pricing control
-  const hdrs = { Authorization: `Bearer ${process.env.HOSPITABLE_API_KEY}`, Accept: 'application/json' };
-  const extras = {};
-  const extraPaths = [
-    'base',
-    'base_with_includes',
-    'settings',
-    'integrations',
-    'pricing',
-    'channels',
-  ];
-  const extraUrls = {
-    base:              `/v2/properties/${propId}`,
-    base_with_includes:`/v2/properties/${propId}?include=integrations,settings,pricing,channels`,
-    settings:          `/v2/properties/${propId}/settings`,
-    integrations:      `/v2/properties/${propId}/integrations`,
-    pricing:           `/v2/properties/${propId}/pricing`,
-    channels:          `/v2/properties/${propId}/channels`,
-  };
-  for (const [key, path] of Object.entries(extraUrls)) {
-    try {
-      const r = await fetch(`https://public.api.hospitable.com${path}`, { headers: hdrs });
-      const text = await r.text();
-      extras[key] = { status: r.status, body: text };
-    } catch (e) {
-      extras[key] = { error: e.message };
-    }
-    await new Promise(r => setTimeout(r, 200));
-  }
-
-  res.json({ property_id: propId, extra_endpoints: extras, put_results: out });
-});
 
 app.post('/api/notify', async (req, res) => {
   const { guestName = 'Unknown', messageBody = '', propertyName = 'Unknown', draftedReply = '' } = req.body;
