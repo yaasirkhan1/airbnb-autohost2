@@ -311,8 +311,7 @@ async function processNewMessages(resourceId, resourceType, messagesPath) {
 
       try {
         const draft = await draftReply(guestName, body, 'your listing', null);
-        // Both reservations and inquiries use the same resourceId for sending
-        scheduleReply(resourceId, guestName, body, draft, 'your listing', null);
+        scheduleReply(resourceId, guestName, body, draft, 'your listing', null, resourceType);
       } catch (e) {
         console.error(`[poll/${resourceType.slice(0, 3)}] Error drafting reply: ${e.message}`);
       }
@@ -450,86 +449,90 @@ Keep replies concise (2-4 sentences). Answer directly. Never make up information
 // ─── Webhook ──────────────────────────────────────────────────────────────────
 
 app.post('/webhook/hospitable', async (req, res) => {
-  // Always 200 first so Hospitable doesn't retry
+  // Always 200 first so Hospitable never retries
   res.sendStatus(200);
 
-  // Log the full raw payload immediately — visible in Railway logs regardless of what follows
-  console.log('[webhook] Received payload:', JSON.stringify(req.body, null, 2));
+  // ── FULL RAW PAYLOAD — logged for every single hit, no exceptions ─────────
+  console.log('=== [webhook] HIT ===');
+  console.log('[webhook] action:', req.body?.action);
+  console.log('[webhook] full payload:', JSON.stringify(req.body, null, 2));
+  console.log('=== [webhook] END ===');
 
   const event = req.body;
 
-  // Validate action
   if (!event?.action) {
-    console.log('[webhook] Ignored — no action field. Full body logged above.');
-    return;
-  }
-  if (event.action !== 'message.created') {
-    console.log(`[webhook] Ignored — action is "${event.action}", expected "message.created"`);
+    console.log('[webhook] No action field — ignoring');
     return;
   }
 
-  // Message schema (per Hospitable OpenAPI spec):
-  // { conversation_id, body, sender_type, sender: { full_name, first_name }, ... }
-  const msg = event.data;
-  if (!msg) {
-    console.log('[webhook] Ignored — event.data is empty');
+  if (event.action !== 'message.created') {
+    console.log(`[webhook] action="${event.action}" — not a message, ignoring`);
     return;
   }
+
+  const msg = event.data;
+  if (!msg) { console.log('[webhook] event.data empty — ignoring'); return; }
+
+  console.log('[webhook] data keys:', Object.keys(msg).join(', '));
 
   const senderType = msg.sender_type;
-  if (senderType === 'host') {
-    console.log('[webhook] Ignored — sender_type is host');
-    return;
-  }
+  if (senderType === 'host') { console.log('[webhook] sender_type=host — ignoring'); return; }
 
   const conversationId = msg.conversation_id;
-  const messageBody    = msg.body || '';
+  const messageBody    = (msg.body || '').trim();
   const guestName      = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
+  const reservationId  = msg.reservation_id  || null;
+  const inquiryId      = msg.inquiry_id       || null; // present on pre-booking inquiries
 
-  if (!conversationId) { console.log('[webhook] Ignored — no conversation_id'); return; }
-  if (!messageBody)    { console.log('[webhook] Ignored — empty message body'); return; }
+  console.log(`[webhook] ✉ from="${guestName}" sender_type="${senderType}" reservation="${reservationId}" inquiry="${inquiryId}" convo="${conversationId}"`);
+  console.log(`[webhook] body: "${messageBody.slice(0, 120)}"`);
 
-  // reservation_id is needed for POST /reservations/{id}/messages (the send endpoint)
-  const reservationId = msg.reservation_id || null;
-  console.log(`[webhook] ✉ Guest "${guestName}" | reservation=${reservationId} | convo=${conversationId} | "${messageBody.slice(0, 100)}"`);
+  if (!messageBody) { console.log('[webhook] empty body — ignoring'); return; }
 
-  if (!reservationId) {
-    console.warn('[webhook] No reservation_id on message — cannot send reply (inquiry before booking?)');
+  // Determine the resource ID to use for sending the reply.
+  // Reservations  → POST /reservations/{id}/messages
+  // Inquiries     → POST /inquiries/{id}/messages  (Hospitable added Sept 2024)
+  // Neither       → log and bail; we don't know where to send
+  const replyResourceId   = reservationId || inquiryId || null;
+  const replyResourceType = reservationId ? 'reservation' : inquiryId ? 'inquiry' : null;
+
+  if (!replyResourceId) {
+    console.warn('[webhook] No reservation_id or inquiry_id — cannot send reply. Full payload logged above.');
     return;
   }
 
-  // Mark as seen so the poller doesn't double-process this message
-  const wKey = messageKey(reservationId, msg);
-  if (seenMessageIds.has(wKey)) {
-    console.log('[webhook] Already seen this message (poller got it first) — skipping');
+  // Dedup against poller
+  const dedupKey = `${replyResourceType}:${replyResourceId}:${msg.platform_id || msg.created_at}`;
+  if (seenMessageIds.has(dedupKey)) {
+    console.log('[webhook] Already seen (poller got it first) — skipping');
     return;
   }
-  seenMessageIds.add(wKey);
+  seenMessageIds.add(dedupKey);
 
-  // Fetch reservation to get property info (/conversations endpoint does not exist in v2 API)
+  // Fetch property info from reservation (inquiries may not have property context)
   let propertyId   = null;
   let propertyName = 'your listing';
-  try {
-    const resData = await hospGet(`/reservations/${reservationId}?include=properties`);
-    const res = resData.data || resData;
-    const prop = res.properties?.[0] || res.property || null;
-    propertyId   = prop?.id   || null;
-    propertyName = prop?.public_name || prop?.name || 'your listing';
-    console.log(`[webhook] Property: "${propertyName}" (${propertyId})`);
-  } catch (e) {
-    console.warn(`[webhook] Could not fetch reservation for property info: ${e.message}`);
+  if (reservationId) {
+    try {
+      const resData = await hospGet(`/reservations/${reservationId}?include=properties`);
+      const r    = resData.data || resData;
+      const prop = r.properties?.[0] || r.property || null;
+      propertyId   = prop?.id || null;
+      propertyName = prop?.public_name || prop?.name || 'your listing';
+      console.log(`[webhook] property="${propertyName}" (${propertyId})`);
+    } catch (e) {
+      console.warn(`[webhook] Could not fetch reservation for property info: ${e.message}`);
+    }
   }
 
-  // Kick off profile learning for unknown properties (non-blocking)
   if (propertyId && !propertyProfiles.has(propertyId)) {
-    console.log(`[learn] No profile yet for "${propertyName}" — learning in background`);
     learnPropertyProfile(propertyId, propertyName).catch(console.error);
   }
 
   try {
-    const draftedReply = await draftReply(guestName, messageBody, propertyName, propertyId);
-    scheduleReply(reservationId, guestName, messageBody, draftedReply, propertyName, propertyId);
-    console.log(`[webhook] ✓ Reply scheduled for "${guestName}" on reservation ${reservationId}`);
+    const draft = await draftReply(guestName, messageBody, propertyName, propertyId);
+    scheduleReply(replyResourceId, guestName, messageBody, draft, propertyName, propertyId, replyResourceType);
+    console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
   } catch (err) {
     console.error('[webhook] Error drafting reply:', err.message);
   }
@@ -537,13 +540,13 @@ app.post('/webhook/hospitable', async (req, res) => {
 
 // ─── Scheduling ───────────────────────────────────────────────────────────────
 
-function scheduleReply(reservationId, guestName, originalMessage, draftedReply, propertyName, propertyId) {
+function scheduleReply(resourceId, guestName, originalMessage, draftedReply, propertyName, propertyId, resourceType = 'reservation') {
   const id = crypto.randomUUID();
   const delayMs = HOST_SETTINGS.delayMinutes * 60 * 1000;
   const sendAt = Date.now() + delayMs;
 
   const entry = {
-    id, reservationId, guestName, propertyName, propertyId,
+    id, resourceId, resourceType, guestName, propertyName, propertyId,
     originalMessage, draftedReply, editedReply: draftedReply,
     status: 'pending', createdAt: Date.now(), sendAt,
     usedProfile: propertyProfiles.has(propertyId),
@@ -554,9 +557,9 @@ function scheduleReply(reservationId, guestName, originalMessage, draftedReply, 
     if (!current || current.status !== 'pending') return;
     current.status = 'sending';
     try {
-      await sendToHospitable(current.reservationId, current.editedReply);
+      await sendToHospitable(current.resourceId, current.editedReply, current.resourceType);
       current.status = 'sent';
-      console.log(`[scheduler] ✓ Sent reply to ${current.guestName} on reservation ${current.reservationId}`);
+      console.log(`[scheduler] ✓ Sent reply to ${current.guestName} via ${current.resourceType} ${current.resourceId}`);
     } catch (err) {
       current.status = 'failed';
       current.error = err.message;
@@ -572,10 +575,11 @@ function scheduleReply(reservationId, guestName, originalMessage, draftedReply, 
   console.log(`[scheduler] Reply queued for ${guestName} — sends in ${HOST_SETTINGS.delayMinutes}min`);
 }
 
-async function sendToHospitable(reservationId, body) {
-  // Endpoint per Hospitable OpenAPI spec: POST /reservations/{uuid}/messages
-  // Body per spec: { body: string } — flat, no data.attributes wrapper
-  const url = `https://public.api.hospitable.com/v2/reservations/${reservationId}/messages`;
+async function sendToHospitable(resourceId, body, resourceType = 'reservation') {
+  // Reservations: POST /reservations/{uuid}/messages  (documented in OpenAPI spec)
+  // Inquiries:    POST /inquiries/{uuid}/messages     (added Sept 2024, not yet in spec)
+  const segment = resourceType === 'inquiry' ? 'inquiries' : 'reservations';
+  const url = `https://public.api.hospitable.com/v2/${segment}/${resourceId}/messages`;
   console.log(`[send] POST ${url}`);
   const res = await fetch(url, {
     method: 'POST',
@@ -638,7 +642,7 @@ app.post('/api/send-now/:id', async (req, res) => {
   clearTimeout(entry.timer);
   entry.status = 'sending';
   try {
-    await sendToHospitable(entry.reservationId, entry.editedReply);
+    await sendToHospitable(entry.resourceId || entry.reservationId, entry.editedReply, entry.resourceType || 'reservation');
     entry.status = 'sent';
     replyLog.unshift({ ...entry });
     if (replyLog.length > 100) replyLog.pop();
