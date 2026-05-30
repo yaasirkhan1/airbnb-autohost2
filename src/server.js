@@ -853,7 +853,7 @@ app.put('/api/pricing', async (req, res) => {
   const results = [];
   for (const id of targetIds) {
     try {
-      await hospPut(`/properties/${id}/calendar`, { dates: { data: calDays } });
+      await hospPut(`/properties/${id}/calendar`, calDays);
       results.push({ id, ok: true });
     } catch (e) {
       results.push({ id, ok: false, error: e.message });
@@ -862,6 +862,35 @@ app.put('/api/pricing', async (req, res) => {
   }
 
   res.json({ updated: results.filter(r => r.ok).length, total: results.length, results });
+});
+
+// Temporary: probe what body shape Hospitable calendar PUT actually accepts
+app.get('/api/pricing/probe', async (req, res) => {
+  const propId = '5a8cafc2-baa9-4fdb-b6dc-773bfcfb75bc';
+  const day = { date: '2026-07-20', price: { amount: 19900 } }; // safe future date outside booking window
+  const candidates = [
+    { label: 'array',            body: [day] },
+    { label: 'data_array',       body: { data: [day] } },
+    { label: 'dates_array',      body: { dates: [day] } },
+    { label: 'dates_data_array', body: { dates: { data: [day] } } },
+    { label: 'days_array',       body: { days: [day] } },
+  ];
+  const out = [];
+  for (const c of candidates) {
+    try {
+      const r = await fetch(`https://public.api.hospitable.com/v2/properties/${propId}/calendar`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${process.env.HOSPITABLE_API_KEY}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(c.body),
+      });
+      const text = await r.text();
+      out.push({ label: c.label, status: r.status, body: text.slice(0, 300) });
+    } catch (e) {
+      out.push({ label: c.label, error: e.message });
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  res.json(out);
 });
 
 app.post('/api/notify', async (req, res) => {
