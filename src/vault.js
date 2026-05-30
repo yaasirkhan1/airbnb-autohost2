@@ -38,11 +38,12 @@ async function generateVariation(propertyId, intensity, callClaude) {
     `Previous title used: "${v.title}"`
   ).join('\n');
 
-  const intensityInstructions = {
+  const INTENSITY_MAP = {
     light: `Make light changes: reword sentences, vary the opening, shuffle some description paragraphs. Keep the same overall structure and selling points. Title should have a slightly different angle but same keywords.`,
     medium: `Make moderate changes: rewrite the description with a different narrative flow, lead with different strengths of the property, use different vocabulary throughout. Title should be meaningfully different — different adjectives, different emphasis.`,
     heavy: `Completely reimagine the listing copy. Write the description from a totally different angle — if the original led with location, lead with the space. If it was cozy/warm in tone, make it sleek/modern. The content facts stay the same but everything else should be unrecognizable compared to the original. Title must be completely different.`,
-  }[intensity] || intensityInstructions.medium;
+  };
+  const intensityInstructions = INTENSITY_MAP[intensity] || INTENSITY_MAP.medium;
 
   const prompt = `You are an expert Airbnb copywriter. Your job is to create a variation of a listing that:
 1. Describes the EXACT same property with the EXACT same facts

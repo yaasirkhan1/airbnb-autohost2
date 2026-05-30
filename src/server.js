@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
+const vault = require('./vault');
 
 const app = express();
 app.use(express.json());
@@ -26,14 +27,18 @@ const HOST_SETTINGS = {
 
 // ─── Hospitable API helpers ───────────────────────────────────────────────────
 
-async function hospGet(path) {
-  const res = await fetch(`https://public.api.hospitable.com/v2${path}`, {
+async function hospGet(apiPath) {
+  const res = await fetch(`https://public.api.hospitable.com/v2${apiPath}`, {
     headers: {
       'Authorization': `Bearer ${process.env.HOSPITABLE_API_KEY}`,
       'Accept': 'application/json',
+      'Content-Type': 'application/json',
     },
   });
-  if (!res.ok) throw new Error(`Hospitable ${res.status} on GET ${path}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Hospitable ${res.status} on GET ${apiPath}: ${body}`);
+  }
   return res.json();
 }
 
@@ -41,7 +46,7 @@ async function hospGet(path) {
 
 async function fetchConversationsForProperty(propertyId, limit = 40) {
   try {
-    const data = await hospGet(`/conversations?filter[property_id]=${propertyId}&page[size]=${limit}&include=messages`);
+    const data = await hospGet(`/conversations?filter[property_id]=${propertyId}&per_page=${limit}&include=messages`);
     return data.data || [];
   } catch (e) {
     console.error(`[learn] Could not fetch conversations for ${propertyId}:`, e.message);
@@ -51,7 +56,7 @@ async function fetchConversationsForProperty(propertyId, limit = 40) {
 
 async function fetchMessagesForConversation(conversationId) {
   try {
-    const data = await hospGet(`/conversations/${conversationId}/messages?page[size]=20`);
+    const data = await hospGet(`/conversations/${conversationId}/messages?per_page=20`);
     return data.data || [];
   } catch (e) {
     return [];
@@ -126,8 +131,8 @@ Return a detailed profile in plain text under these headings:
 async function initAllPropertyProfiles() {
   try {
     console.log('[learn] Fetching all properties...');
-    const data = await hospGet('/properties?page[size]=50');
-    const properties = data.data || [];
+    const data = await hospGet('/properties?per_page=50');
+    const properties = data.data || data.properties || [];
     console.log(`[learn] Found ${properties.length} properties — building profiles...`);
     for (const p of properties) {
       const id = p.id;
@@ -396,8 +401,6 @@ app.listen(PORT, () => {
 
 // ─── Vault routes ─────────────────────────────────────────────────────────────
 
-const vault = require('./vault');
-
 // Get full vault
 app.get('/api/vault', (req, res) => {
   res.json({ vault: vault.getVault() });
@@ -421,8 +424,8 @@ app.post('/api/vault/:propertyId', (req, res) => {
 // Auto-import from Hospitable into vault
 app.post('/api/vault/import/hospitable', async (req, res) => {
   try {
-    const data = await hospGet('/properties?page[size]=50');
-    const properties = data.data || [];
+    const data = await hospGet('/properties?per_page=50');
+    const properties = data.data || data.properties || [];
     const imported = [];
     for (const p of properties) {
       const id = p.id;
