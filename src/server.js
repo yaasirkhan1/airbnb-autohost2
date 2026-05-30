@@ -294,9 +294,16 @@ app.post('/webhook/hospitable', async (req, res) => {
   if (!conversationId) { console.log('[webhook] Ignored — no conversation_id'); return; }
   if (!messageBody)    { console.log('[webhook] Ignored — empty message body'); return; }
 
-  console.log(`[webhook] ✉ Guest "${guestName}" (convo ${conversationId}): "${messageBody.slice(0, 100)}"`);
+  // reservation_id is needed for POST /reservations/{id}/messages (the send endpoint)
+  const reservationId = msg.reservation_id || null;
+  console.log(`[webhook] ✉ Guest "${guestName}" | reservation=${reservationId} | convo=${conversationId} | "${messageBody.slice(0, 100)}"`);
 
-  // Fetch conversation to get property info (Message schema has no property_id)
+  if (!reservationId) {
+    console.warn('[webhook] No reservation_id on message — cannot send reply (inquiry before booking?)');
+    return;
+  }
+
+  // Fetch conversation to get property info (Message schema has no property fields)
   let propertyId   = null;
   let propertyName = 'your listing';
   try {
@@ -316,8 +323,8 @@ app.post('/webhook/hospitable', async (req, res) => {
 
   try {
     const draftedReply = await draftReply(guestName, messageBody, propertyName, propertyId);
-    scheduleReply(conversationId, guestName, messageBody, draftedReply, propertyName, propertyId);
-    console.log(`[webhook] ✓ Reply scheduled for "${guestName}"`);
+    scheduleReply(reservationId, guestName, messageBody, draftedReply, propertyName, propertyId);
+    console.log(`[webhook] ✓ Reply scheduled for "${guestName}" on reservation ${reservationId}`);
   } catch (err) {
     console.error('[webhook] Error drafting reply:', err.message);
   }
@@ -325,13 +332,13 @@ app.post('/webhook/hospitable', async (req, res) => {
 
 // ─── Scheduling ───────────────────────────────────────────────────────────────
 
-function scheduleReply(conversationId, guestName, originalMessage, draftedReply, propertyName, propertyId) {
+function scheduleReply(reservationId, guestName, originalMessage, draftedReply, propertyName, propertyId) {
   const id = crypto.randomUUID();
   const delayMs = HOST_SETTINGS.delayMinutes * 60 * 1000;
   const sendAt = Date.now() + delayMs;
 
   const entry = {
-    id, conversationId, guestName, propertyName, propertyId,
+    id, reservationId, guestName, propertyName, propertyId,
     originalMessage, draftedReply, editedReply: draftedReply,
     status: 'pending', createdAt: Date.now(), sendAt,
     usedProfile: propertyProfiles.has(propertyId),
@@ -342,11 +349,13 @@ function scheduleReply(conversationId, guestName, originalMessage, draftedReply,
     if (!current || current.status !== 'pending') return;
     current.status = 'sending';
     try {
-      await sendToHospitable(current.conversationId, current.editedReply);
+      await sendToHospitable(current.reservationId, current.editedReply);
       current.status = 'sent';
+      console.log(`[scheduler] ✓ Sent reply to ${current.guestName} on reservation ${current.reservationId}`);
     } catch (err) {
       current.status = 'failed';
       current.error = err.message;
+      console.error(`[scheduler] ✗ Failed to send to ${current.guestName}: ${err.message}`);
     }
     replyLog.unshift({ ...current });
     if (replyLog.length > 100) replyLog.pop();
@@ -358,29 +367,37 @@ function scheduleReply(conversationId, guestName, originalMessage, draftedReply,
   console.log(`[scheduler] Reply queued for ${guestName} — sends in ${HOST_SETTINGS.delayMinutes}min`);
 }
 
-async function sendToHospitable(conversationId, body) {
-  const res = await fetch(`https://public.api.hospitable.com/v2/conversations/${conversationId}/messages`, {
+async function sendToHospitable(reservationId, body) {
+  // Endpoint per Hospitable OpenAPI spec: POST /reservations/{uuid}/messages
+  // Body per spec: { body: string } — flat, no data.attributes wrapper
+  const url = `https://public.api.hospitable.com/v2/reservations/${reservationId}/messages`;
+  console.log(`[send] POST ${url}`);
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${process.env.HOSPITABLE_API_KEY}`,
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     },
-    body: JSON.stringify({ data: { attributes: { body } } }),
+    body: JSON.stringify({ body }),
   });
-  if (!res.ok) throw new Error(`Hospitable ${res.status}`);
-  return res.json();
+  const responseText = await res.text();
+  console.log(`[send] Hospitable response ${res.status}: ${responseText.slice(0, 300)}`);
+  if (!res.ok) {
+    throw new Error(`Hospitable ${res.status}: ${responseText}`);
+  }
+  return JSON.parse(responseText);
 }
 
 // ─── Dashboard API ────────────────────────────────────────────────────────────
 
 app.get('/api/queue', (req, res) => {
   const pending = Array.from(pendingReplies.values()).map(e => ({
-    id: e.id, conversationId: e.conversationId, guestName: e.guestName,
+    id: e.id, reservationId: e.reservationId, guestName: e.guestName,
     propertyName: e.propertyName, originalMessage: e.originalMessage,
     draftedReply: e.draftedReply, editedReply: e.editedReply,
     status: e.status, createdAt: e.createdAt, sendAt: e.sendAt,
-    usedProfile: e.usedProfile,
+    usedProfile: e.usedProfile, error: e.error,
   }));
 
   const profiles = Array.from(propertyProfiles.entries()).map(([id, p]) => ({
@@ -416,7 +433,7 @@ app.post('/api/send-now/:id', async (req, res) => {
   clearTimeout(entry.timer);
   entry.status = 'sending';
   try {
-    await sendToHospitable(entry.conversationId, entry.editedReply);
+    await sendToHospitable(entry.reservationId, entry.editedReply);
     entry.status = 'sent';
     replyLog.unshift({ ...entry });
     if (replyLog.length > 100) replyLog.pop();
