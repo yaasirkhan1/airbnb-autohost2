@@ -233,7 +233,8 @@ async function pollReservationMessages() {
   try {
     const since = toHospitableDate(new Date(Date.now() - 90 * 1000));
     const qs    = buildPropertyQs();
-    const data  = await hospGet(`/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
+    // include=properties so we know which property each reservation belongs to
+    const data  = await hospGet(`/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50&include=properties`);
     const reservations = parseReservations(data);
 
     if (reservations.length) {
@@ -241,10 +242,15 @@ async function pollReservationMessages() {
     }
 
     for (const reservation of reservations) {
+      const prop       = reservation.properties?.[0] || reservation.property || null;
+      const propId     = prop?.id   || null;
+      const propName   = prop?.public_name || prop?.name || 'your listing';
       await processNewMessages(
         reservation.id,
         'reservation',
         `/reservations/${reservation.id}/messages?per_page=10`,
+        propId,
+        propName,
       );
     }
   } catch (e) {
@@ -286,13 +292,15 @@ async function pollInquiryMessages() {
   }
 }
 
-async function processNewMessages(resourceId, resourceType, messagesPath) {
+async function processNewMessages(resourceId, resourceType, messagesPath, propertyId = null, propertyName = 'your listing') {
   try {
     const msgData = await hospGet(messagesPath);
     const messages = parseMessages(msgData);
 
     for (const msg of messages) {
-      if (msg.sender_type !== 'guest') continue;
+      // Use sender_role (actual Hospitable field) with sender_type as fallback
+      const role = msg.sender_role || msg.sender_type;
+      if (role === 'host' || role === 'co-host' || role === 'teammate') continue;
 
       const key = messageKey(resourceId, msg);
       if (seenMessageIds.has(key)) continue;
@@ -307,13 +315,15 @@ async function processNewMessages(resourceId, resourceType, messagesPath) {
       if (!body) continue;
 
       const guestName = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
-      console.log(`[poll/${resourceType.slice(0, 3)}] 📨 "${guestName}" (${resourceId}): "${body.slice(0, 80)}"`);
+      const tag = resourceType.slice(0, 3);
+      console.log(`[poll/${tag}] 📨 "${guestName}" property="${propertyName}" (${resourceId}): "${body.slice(0, 80)}"`);
+      console.log(`[poll/${tag}] using profile: ${propertyProfiles.has(propertyId)}`);
 
       try {
-        const draft = await draftReply(guestName, body, 'your listing', null);
-        scheduleReply(resourceId, guestName, body, draft, 'your listing', null, resourceType);
+        const draft = await draftReply(guestName, body, propertyName, propertyId);
+        scheduleReply(resourceId, guestName, body, draft, propertyName, propertyId, resourceType);
       } catch (e) {
-        console.error(`[poll/${resourceType.slice(0, 3)}] Error drafting reply: ${e.message}`);
+        console.error(`[poll/${tag}] Error drafting reply: ${e.message}`);
       }
     }
   } catch (e) {
@@ -406,41 +416,43 @@ async function draftReply(guestName, messageBody, propertyName, propertyId) {
 
   let systemPrompt;
 
+  const ANSWER_FIRST = `CRITICAL RULE: Your very first sentence must directly answer or address the guest's specific question. Do NOT open with pleasantries, check-in times, or unrelated information unless the guest explicitly asked about those things. If you don't know the answer, say so clearly rather than pivoting to something else.`;
+
   if (profileData?.profile) {
-    // Rich profile from learned history
     const exampleBlock = examples.length
-      ? `\nHere are similar past exchanges to use as style reference:\n` +
+      ? `\nRelevant past exchanges for style reference:\n` +
         examples.map(e => `Guest: "${e.guest}"\nYour past reply: "${e.host}"`).join('\n\n')
       : '';
 
     systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host replying to a guest at "${propertyName}".
 
-You have learned this host's communication style from their real message history. Match it precisely.
+${ANSWER_FIRST}
 
-HOST PROFILE (learned from real messages):
+HOST COMMUNICATION PROFILE (learned from real message history — match this style):
 ${profileData.profile}
 
-PROPERTY DETAILS (use these facts):
+PROPERTY DETAILS:
 - Check-in: ${HOST_SETTINGS.checkin}
 - Check-out: ${HOST_SETTINGS.checkout}
 - House rules: ${HOST_SETTINGS.houseRules}
-- Extra context: ${HOST_SETTINGS.extraContext}
+${HOST_SETTINGS.extraContext ? `- Extra context: ${HOST_SETTINGS.extraContext}` : ''}
 ${exampleBlock}
 
-Instructions:
-- Reply in the exact style shown in the profile and examples
+Additional rules:
 - Be concise (2-4 sentences) unless the question genuinely needs more
-- Answer the guest's specific question directly
 - Never make up information you don't have
 - No sign-off or signature needed`;
   } else {
-    // Fallback to variable-based prompt if no profile yet
     systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style.
+
+${ANSWER_FIRST}
+
 Property: ${propertyName}
 Check-in: ${HOST_SETTINGS.checkin} | Check-out: ${HOST_SETTINGS.checkout}
 House rules: ${HOST_SETTINGS.houseRules}
-${HOST_SETTINGS.extraContext ? 'Context: ' + HOST_SETTINGS.extraContext : ''}
-Keep replies concise (2-4 sentences). Answer directly. Never make up information.`;
+${HOST_SETTINGS.extraContext ? `Context: ${HOST_SETTINGS.extraContext}` : ''}
+
+Keep replies concise (2-4 sentences). Never make up information.`;
   }
 
   return callClaude(systemPrompt, `Guest ${guestName} says: "${messageBody}"`, 500);
@@ -519,10 +531,15 @@ app.post('/webhook/hospitable', async (req, res) => {
     try {
       const resData = await hospGet(`/reservations/${reservationId}?include=properties`);
       const r    = resData.data || resData;
+      // Log the raw shape so we can see exactly what include=properties returns
+      console.log('[webhook] reservation lookup keys:', Object.keys(r).join(', '));
+      console.log('[webhook] reservation properties field:', JSON.stringify(r.properties || r.property || 'missing'));
       const prop = r.properties?.[0] || r.property || null;
       propertyId   = prop?.id || null;
       propertyName = prop?.public_name || prop?.name || 'your listing';
-      console.log(`[webhook] property="${propertyName}" (${propertyId})`);
+      console.log(`[webhook] resolved property="${propertyName}" id=${propertyId}`);
+      console.log(`[webhook] propertyProfiles has this id: ${propertyProfiles.has(propertyId)}`);
+      console.log(`[webhook] known profile ids: ${[...propertyProfiles.keys()].join(', ')}`);
     } catch (e) {
       console.warn(`[webhook] Could not fetch reservation for property info: ${e.message}`);
     }
