@@ -66,6 +66,23 @@ async function hospGet(apiPath) {
   return res.json();
 }
 
+async function hospPut(apiPath, body) {
+  const res = await fetch(`https://public.api.hospitable.com/v2${apiPath}`, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${process.env.HOSPITABLE_API_KEY}`,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Hospitable ${res.status} on PUT ${apiPath}: ${text}`);
+  }
+  return res.json().catch(() => ({}));
+}
+
 // ─── History learning ─────────────────────────────────────────────────────────
 // The Hospitable public API has no /conversations endpoint.
 // Reservations are the correct resource; messages live at /reservations/{id}/messages.
@@ -802,6 +819,49 @@ app.get('/api/pricing', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// PUT /api/pricing
+// Body: { property_ids?: [...], updates: [{date: 'YYYY-MM-DD', price: dollars, min_stay?: N}] }
+// Omit property_ids to default to all Atlanta (World Cup/Downtown/FIFA) listings.
+// Price is accepted in whole dollars and converted to cents for Hospitable.
+app.put('/api/pricing', async (req, res) => {
+  const { property_ids, updates } = req.body;
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ error: 'updates array required: [{date, price (USD), min_stay?}]' });
+  }
+
+  const calDays = updates.map(u => ({
+    date: u.date,
+    price: { amount: Math.round(u.price * 100) },
+    ...(u.min_stay != null && { min_stay: u.min_stay }),
+  }));
+
+  let targetIds = Array.isArray(property_ids) && property_ids.length > 0 ? property_ids : null;
+  if (!targetIds) {
+    try {
+      const propData = await hospGet('/properties?per_page=50');
+      const props = parseProperties(propData);
+      targetIds = props
+        .filter(p => ['World Cup', 'Downtown', 'FIFA'].some(k => (p.public_name || p.name || '').includes(k)))
+        .map(p => p.id);
+    } catch (e) {
+      return res.status(500).json({ error: `Could not fetch properties: ${e.message}` });
+    }
+  }
+
+  const results = [];
+  for (const id of targetIds) {
+    try {
+      await hospPut(`/properties/${id}/calendar`, { data: calDays });
+      results.push({ id, ok: true });
+    } catch (e) {
+      results.push({ id, ok: false, error: e.message });
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  res.json({ updated: results.filter(r => r.ok).length, total: results.length, results });
 });
 
 app.post('/api/notify', async (req, res) => {
