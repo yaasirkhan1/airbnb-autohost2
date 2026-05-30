@@ -27,6 +27,25 @@ const HOST_SETTINGS = {
 
 // ─── Hospitable API helpers ───────────────────────────────────────────────────
 
+function parseProperties(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.properties)) return data.properties;
+  return [];
+}
+
+function formatHouseRules(rules) {
+  if (!rules || typeof rules !== 'object') return '';
+  const lines = [];
+  if (rules.smoking_allowed === false) lines.push('No smoking');
+  else if (rules.smoking_allowed === true) lines.push('Smoking allowed');
+  if (rules.pets_allowed === false) lines.push('No pets');
+  else if (rules.pets_allowed === true) lines.push('Pets allowed');
+  if (rules.events_allowed === false) lines.push('No events or parties');
+  else if (rules.events_allowed === true) lines.push('Events allowed');
+  return lines.join('. ');
+}
+
 async function hospGet(apiPath) {
   const res = await fetch(`https://public.api.hospitable.com/v2${apiPath}`, {
     headers: {
@@ -132,12 +151,11 @@ async function initAllPropertyProfiles() {
   try {
     console.log('[learn] Fetching all properties...');
     const data = await hospGet('/properties?per_page=50');
-    console.log('[debug] /properties raw response:', JSON.stringify(data, null, 2));
-    const properties = data.data || data.properties || [];
+    const properties = parseProperties(data);
     console.log(`[learn] Found ${properties.length} properties — building profiles...`);
     for (const p of properties) {
       const id = p.id;
-      const name = p.attributes?.name || id;
+      const name = p.public_name || p.name || id;
       await learnPropertyProfile(id, name);
       // Small delay to avoid rate limiting
       await new Promise(r => setTimeout(r, 1500));
@@ -426,15 +444,14 @@ app.post('/api/vault/:propertyId', (req, res) => {
 app.post('/api/vault/import/hospitable', async (req, res) => {
   try {
     const data = await hospGet('/properties?per_page=50');
-    console.log('[debug] /vault/import/hospitable raw response:', JSON.stringify(data, null, 2));
-    const properties = data.data || data.properties || [];
+    const properties = parseProperties(data);
     const imported = [];
     for (const p of properties) {
       const id = p.id;
-      const name = p.attributes?.name || id;
-      const title = p.attributes?.name || '';
-      const description = p.attributes?.description || p.attributes?.summary || '';
-      const houseRules = p.attributes?.house_rules || '';
+      const name = p.public_name || p.name || id;
+      const title = p.public_name || p.name || '';
+      const description = p.description || p.summary || '';
+      const houseRules = formatHouseRules(p.house_rules);
       if (title || description) {
         vault.saveToVault(id, { title, description, houseRules, propertyName: name });
         imported.push(name);
