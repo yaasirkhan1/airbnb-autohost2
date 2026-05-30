@@ -14,6 +14,11 @@ const replyLog = [];
 const propertyProfiles = new Map();  // propertyId -> { profile, learnedAt, propertyName }
 const propertyHistory = new Map();   // propertyId -> [{ guest, host, topic }]
 
+// Polling state
+const seenMessageIds = new Set(); // dedup between webhook + polling
+let knownPropertyIds  = [];       // populated after initAllPropertyProfiles
+let pollingSince      = null;     // ISO timestamp — only reply to messages after this
+
 const HOST_SETTINGS = {
   name: process.env.HOST_NAME || 'Your Host',
   tone: process.env.HOST_TONE || 'warm and friendly',
@@ -152,18 +157,125 @@ async function initAllPropertyProfiles() {
     console.log('[learn] Fetching all properties...');
     const data = await hospGet('/properties?per_page=50');
     const properties = parseProperties(data);
+    knownPropertyIds = properties.map(p => p.id);
     console.log(`[learn] Found ${properties.length} properties — building profiles...`);
     for (const p of properties) {
       const id = p.id;
       const name = p.public_name || p.name || id;
       await learnPropertyProfile(id, name);
-      // Small delay to avoid rate limiting
       await new Promise(r => setTimeout(r, 1500));
     }
     console.log('[learn] ✅ All property profiles ready');
   } catch (e) {
     console.error('[learn] Failed to init profiles:', e.message);
   }
+
+  // Warm-up: mark all messages currently in the inbox as seen WITHOUT replying.
+  // This prevents the poller from spamming guests when the server (re)starts.
+  try {
+    await warmUpSeenMessages();
+  } catch (e) {
+    console.error('[poll] Warm-up error:', e.message);
+  }
+
+  // Start polling after warm-up so only truly new messages trigger replies
+  pollingSince = new Date().toISOString();
+  setInterval(pollForNewMessages, 60 * 1000);
+  console.log(`[poll] Polling started — checking every 60s (since ${pollingSince})`);
+}
+
+async function warmUpSeenMessages() {
+  if (!knownPropertyIds.length) return;
+  console.log('[poll] Warm-up — marking existing inbox messages as seen...');
+  const qs = buildPropertyQs();
+  const data = await hospGet(`/reservations?${qs}&per_page=50`);
+  const reservations = parseReservations(data);
+  for (const r of reservations) {
+    const msgData = await hospGet(`/reservations/${r.id}/messages?per_page=20`);
+    const messages = parseMessages(msgData);
+    for (const m of messages) {
+      seenMessageIds.add(messageKey(r.id, m));
+    }
+  }
+  console.log(`[poll] Warm-up done — ${seenMessageIds.size} existing messages marked seen`);
+}
+
+async function pollForNewMessages() {
+  if (!knownPropertyIds.length || !pollingSince) return;
+  if (!process.env.HOSPITABLE_API_KEY) return;
+
+  try {
+    // 90s window — slightly wider than 60s interval to avoid gaps at boundaries
+    const since = new Date(Date.now() - 90 * 1000).toISOString();
+    const qs = buildPropertyQs();
+    const data = await hospGet(`/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
+    const reservations = parseReservations(data);
+
+    if (reservations.length) {
+      console.log(`[poll] ${reservations.length} reservation(s) with recent messages`);
+    }
+
+    for (const reservation of reservations) {
+      const reservationId = reservation.id;
+      const msgData = await hospGet(`/reservations/${reservationId}/messages?per_page=10`);
+      const messages = parseMessages(msgData);
+
+      for (const msg of messages) {
+        if (msg.sender_type !== 'guest') continue;
+
+        const key = messageKey(reservationId, msg);
+        if (seenMessageIds.has(key)) continue;
+        seenMessageIds.add(key);
+        if (seenMessageIds.size > 2000) {
+          seenMessageIds.delete(seenMessageIds.values().next().value);
+        }
+
+        // Skip messages older than pollingSince (pre-startup inbox)
+        if (msg.created_at && msg.created_at < pollingSince) continue;
+
+        const body = (msg.body || '').trim();
+        if (!body) continue;
+
+        const guestName = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
+        console.log(`[poll] 📨 New message — "${guestName}" on reservation ${reservationId}: "${body.slice(0, 80)}"`);
+
+        try {
+          const draft = await draftReply(guestName, body, 'your listing', null);
+          scheduleReply(reservationId, guestName, body, draft, 'your listing', null);
+        } catch (e) {
+          console.error(`[poll] Error drafting reply for reservation ${reservationId}: ${e.message}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[poll] Error during poll:', e.message);
+  }
+}
+
+// ─── Polling helpers ──────────────────────────────────────────────────────────
+
+function buildPropertyQs() {
+  return knownPropertyIds.map(id => `properties[]=${id}`).join('&');
+}
+
+function parseReservations(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.reservations)) return data.reservations;
+  return [];
+}
+
+function parseMessages(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.messages)) return data.messages;
+  return [];
+}
+
+function messageKey(reservationId, msg) {
+  // platform_id is the channel-native message ID (most stable unique key)
+  if (msg.platform_id) return `${reservationId}:${msg.platform_id}`;
+  return `${reservationId}:${msg.created_at}`;
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
@@ -302,6 +414,14 @@ app.post('/webhook/hospitable', async (req, res) => {
     console.warn('[webhook] No reservation_id on message — cannot send reply (inquiry before booking?)');
     return;
   }
+
+  // Mark as seen so the poller doesn't double-process this message
+  const wKey = messageKey(reservationId, msg);
+  if (seenMessageIds.has(wKey)) {
+    console.log('[webhook] Already seen this message (poller got it first) — skipping');
+    return;
+  }
+  seenMessageIds.add(wKey);
 
   // Fetch conversation to get property info (Message schema has no property fields)
   let propertyId   = null;
@@ -459,6 +579,7 @@ app.get('/health', (req, res) => res.json({
   pending: pendingReplies.size,
   profilesLoaded: propertyProfiles.size,
   uptime: Math.floor(process.uptime()),
+  polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size },
 }));
 
 app.get('/test', (req, res) => {
