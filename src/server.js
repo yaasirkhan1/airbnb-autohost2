@@ -39,6 +39,57 @@ const HOST_SETTINGS = {
   autosend: process.env.AUTOSEND !== 'false',
 };
 
+// ─── Atlanta demand-based pricing engine — config & state ────────────────────
+
+const ATLANTA_1BR_IDS = [
+  '1af8fdde-58ee-426e-8374-6530397347e8',  // WC Apartment Premier
+  '5a8cafc2-baa9-4fdb-b6dc-773bfcfb75bc',  // Downtown 1BR High-Rise
+  'bbe43523-c42a-46b0-8235-7ad08ae990c9',  // WC Lodging Short Walk
+  '80c21aac-00eb-49af-9094-6792839ff5a4',  // WC Traveler Pkg A
+  '3e702102-a219-4c18-9f88-3a4d1ceb3825',  // WC Flat Rate Walk
+  '283977a3-3af3-4d90-8d95-b418a3014d90',  // WC Traveler Pkg B
+];
+const ATLANTA_2BR_ID  = '7b7fda8b-e1d8-460f-8143-59a1a2b4d81c'; // WC Package 2BR (21-I)
+const ATLANTA_ALL_IDS = [...ATLANTA_1BR_IDS, ATLANTA_2BR_ID];
+
+const PRICE_RULES = {
+  '1br': { floor: 175,  ceiling:  799 },
+  '2br': { floor: 250,  ceiling: 1199 },
+};
+function getPriceRules(id) {
+  return id === ATLANTA_2BR_ID ? PRICE_RULES['2br'] : PRICE_RULES['1br'];
+}
+
+// Persisted per-property price state: { price, lastInquiryAt, lastChangedAt, pendingPush, log[] }
+const pricingState   = new Map();
+const pricingChanges = []; // global chronological log, capped at 200
+let   pricingLastRun = null;
+
+const PRICING_STATE_PATH = path.join(
+  process.env.DATA_DIR || path.join(__dirname, '../data'),
+  'pricing_state.json'
+);
+
+function loadPricingState() {
+  try {
+    if (!fs.existsSync(PRICING_STATE_PATH)) return;
+    const raw = JSON.parse(fs.readFileSync(PRICING_STATE_PATH, 'utf8'));
+    for (const [id, s] of Object.entries(raw)) pricingState.set(id, s);
+    console.log(`[pricing] Loaded state for ${pricingState.size} properties`);
+  } catch (e) {
+    console.error('[pricing] Could not load pricing_state.json:', e.message);
+  }
+}
+
+function savePricingState() {
+  try {
+    fs.mkdirSync(path.dirname(PRICING_STATE_PATH), { recursive: true });
+    fs.writeFileSync(PRICING_STATE_PATH, JSON.stringify(Object.fromEntries(pricingState), null, 2));
+  } catch (e) {
+    console.error('[pricing] Could not save pricing_state.json:', e.message);
+  }
+}
+
 // ─── Hospitable API helpers ───────────────────────────────────────────────────
 
 function parseProperties(data) {
@@ -211,6 +262,17 @@ async function initAllPropertyProfiles() {
   pollingSince = toHospitableDate(new Date());
   setInterval(pollForNewMessages, 60 * 1000);
   console.log(`[poll] Polling started — checking every 60s (since ${pollingSince})`);
+
+  // Start hourly demand-based pricing engine (10s after warm-up to avoid startup noise)
+  loadPricingState();
+  setTimeout(() => {
+    runPricingEngine().catch(e => console.error('[pricing] Initial run failed:', e.message));
+    setInterval(
+      () => runPricingEngine().catch(e => console.error('[pricing] Run error:', e.message)),
+      60 * 60 * 1000
+    );
+    console.log('[pricing] Engine started — runs every 60 minutes');
+  }, 10 * 1000);
 }
 
 async function warmUpSeenMessages() {
@@ -398,6 +460,136 @@ function messageKey(reservationId, msg) {
 // not ISO 8601 — i.e. "2026-05-30 12:34:56" with a space, no T, no ms, no Z.
 function toHospitableDate(date) {
   return date.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+// ─── Atlanta demand-based pricing engine — logic ─────────────────────────────
+
+// Count reservation/inquiry threads for this property that:
+//   - had a message within the last windowHours
+//   - have a check_in date within the next 30 days (or unknown check_in = counted)
+// Returns { count, latestAt }
+async function countPropertyInquiries(propertyId, windowHours) {
+  const since    = toHospitableDate(new Date(Date.now() - windowHours * 3600 * 1000));
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const in30dStr = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+
+  let count = 0, latestAt = null;
+
+  const tally = (items, getPropId) => {
+    for (const item of items) {
+      if (getPropId && getPropId(item) !== propertyId) continue;
+      const checkIn = (item.check_in || item.checkin || '').slice(0, 10);
+      if (checkIn && (checkIn < todayStr || checkIn > in30dStr)) continue;
+      count++;
+      const t = item.last_message_at || item.updated_at || item.created_at;
+      if (t && (!latestAt || t > latestAt)) latestAt = t;
+    }
+  };
+
+  try {
+    const data = await hospGet(
+      `/reservations?properties[]=${propertyId}&last_message_at=${encodeURIComponent(since)}&per_page=50`
+    );
+    tally(parseReservations(data), null);
+  } catch (e) {
+    console.error(`[pricing] reservations lookup (${propertyId.slice(0, 8)}…):`, e.message);
+  }
+
+  if (!inquiriesUnavailable) {
+    try {
+      const data = await hospGet(`/inquiries?last_message_at=${encodeURIComponent(since)}&per_page=50`);
+      tally(parseInquiries(data), inq =>
+        inq.property_id || inq.property?.id || inq.properties?.[0]?.id
+      );
+    } catch (_) {}
+  }
+
+  return { count, latestAt };
+}
+
+async function runPricingEngine() {
+  const runAt = new Date().toISOString();
+  console.log(`[pricing] ── Hourly demand check ${runAt} ──`);
+
+  for (const propId of ATLANTA_ALL_IDS) {
+    try {
+      const rules = getPriceRules(propId);
+      const state = pricingState.get(propId) || {
+        price: rules.floor, lastInquiryAt: null, lastChangedAt: null, pendingPush: false, log: [],
+      };
+
+      const { count: count24h, latestAt } = await countPropertyInquiries(propId, 24);
+      if (count24h > 0 && latestAt) state.lastInquiryAt = latestAt;
+
+      const hoursSinceLast = state.lastInquiryAt
+        ? (Date.now() - new Date(state.lastInquiryAt).getTime()) / 3600000
+        : Infinity;
+
+      const prev = state.price;
+      let next   = prev;
+      let reason = null;
+
+      if (count24h >= 3) {
+        next = Math.min(Math.round(prev * 1.10), rules.ceiling);
+        if (next > prev)
+          reason = `HIGH_DEMAND: ${count24h} inquiries in 24h → +10% ($${prev}→$${next})`;
+      } else if (count24h === 0 && hoursSinceLast >= 48) {
+        next = Math.max(Math.round(prev * 0.95), rules.floor);
+        if (next < prev)
+          reason = `LOW_DEMAND: 0 inquiries for ${Math.round(hoursSinceLast)}h → -5% ($${prev}→$${next})`;
+      }
+
+      const priceChanged = !!(reason && next !== prev);
+      const shouldPush   = priceChanged || state.pendingPush;
+
+      if (shouldPush) {
+        // Build 31-day range of daily price updates
+        const days = [];
+        const d = new Date(), end = new Date(Date.now() + 30 * 24 * 3600 * 1000);
+        while (d <= end) {
+          days.push({ date: d.toISOString().slice(0, 10), price: { amount: next * 100 } });
+          d.setDate(d.getDate() + 1);
+        }
+
+        let pushStatus = 'pending_flag';
+        try {
+          await hospPut(`/properties/${propId}/calendar`, days);
+          pushStatus = 'pushed';
+          state.pendingPush = false;
+        } catch (e) {
+          pushStatus = e.message.includes('422') ? 'pending_flag' : `error:${e.message.slice(0, 80)}`;
+          state.pendingPush = true;
+        }
+
+        if (priceChanged) {
+          const entry = {
+            ts: runAt, propertyId: propId,
+            from: prev, to: next, reason,
+            count24h, hoursSinceLast: Math.round(hoursSinceLast), push: pushStatus,
+          };
+          state.price = next;
+          state.lastChangedAt = runAt;
+          state.log = [entry, ...(state.log || [])].slice(0, 50);
+          pricingChanges.unshift(entry);
+          if (pricingChanges.length > 200) pricingChanges.pop();
+          console.log(`[pricing] ${propId.slice(0, 8)}… ${reason} | push=${pushStatus}`);
+        } else {
+          console.log(`[pricing] ${propId.slice(0, 8)}… retry push $${next} | push=${pushStatus}`);
+        }
+      } else {
+        console.log(`[pricing] ${propId.slice(0, 8)}… no change ($${prev}) | 24h=${count24h} last=${Math.round(hoursSinceLast)}h ago`);
+      }
+
+      pricingState.set(propId, state);
+      await new Promise(r => setTimeout(r, 300));
+    } catch (e) {
+      console.error(`[pricing] Engine error for ${propId}:`, e.message);
+    }
+  }
+
+  pricingLastRun = runAt;
+  savePricingState();
+  console.log('[pricing] ── Done ──');
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
@@ -901,12 +1093,40 @@ app.post('/api/notify', async (req, res) => {
   }
 });
 
+// GET /api/pricing/engine — current engine state + change log
+app.get('/api/pricing/engine', (req, res) => {
+  const nextRunMs = pricingLastRun
+    ? Math.max(0, new Date(pricingLastRun).getTime() + 3600000 - Date.now())
+    : null;
+  res.json({
+    lastRun:   pricingLastRun,
+    nextRunIn: nextRunMs != null ? Math.round(nextRunMs / 60000) + 'min' : 'pending',
+    state: ATLANTA_ALL_IDS.map(id => {
+      const s     = pricingState.get(id) || {};
+      const rules = getPriceRules(id);
+      return {
+        id,
+        type:          id === ATLANTA_2BR_ID ? '2br' : '1br',
+        price:         s.price         ?? rules.floor,
+        floor:         rules.floor,
+        ceiling:       rules.ceiling,
+        lastInquiryAt: s.lastInquiryAt  || null,
+        lastChangedAt: s.lastChangedAt  || null,
+        pendingPush:   !!s.pendingPush,
+        recentLog:     (s.log || []).slice(0, 5),
+      };
+    }),
+    changeLog: pricingChanges.slice(0, 50),
+  });
+});
+
 app.get('/health', (req, res) => res.json({
   ok: true,
   pending: pendingReplies.size,
   profilesLoaded: propertyProfiles.size,
   uptime: Math.floor(process.uptime()),
   polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size, inquiriesDisabled: inquiriesUnavailable },
+  pricingEngine: { active: !!pricingLastRun, lastRun: pricingLastRun, properties: ATLANTA_ALL_IDS.length, pendingChanges: pricingChanges.filter(e => e.push === 'pending_flag').length },
 }));
 
 app.get('/test', (req, res) => {
