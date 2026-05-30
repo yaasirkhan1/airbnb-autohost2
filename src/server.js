@@ -205,33 +205,60 @@ async function pollForNewMessages() {
   if (!process.env.HOSPITABLE_API_KEY) return;
 
   try {
-    // 90s window — slightly wider than 60s interval to avoid gaps at boundaries
     const since = new Date(Date.now() - 90 * 1000).toISOString();
     const qs = buildPropertyQs();
-    const data = await hospGet(`/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
-    const reservations = parseReservations(data);
 
-    if (reservations.length) {
-      console.log(`[poll] ${reservations.length} reservation(s) with recent messages`);
+    // ── DEBUG: filtered poll ──────────────────────────────────────────────────
+    const filteredUrl = `/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`;
+    console.log(`[poll:debug] GET ${filteredUrl}`);
+    const filteredData = await hospGet(filteredUrl);
+    console.log('[poll:debug] filtered raw response:', JSON.stringify(filteredData, null, 2).slice(0, 1500));
+    const filteredReservations = parseReservations(filteredData);
+    console.log(`[poll:debug] filtered reservations count: ${filteredReservations.length}`);
+
+    // ── DEBUG: unfiltered poll (no last_message_at) to see if ANY come back ──
+    const unfilteredUrl = `/reservations?${qs}&per_page=10`;
+    console.log(`[poll:debug] GET ${unfilteredUrl}`);
+    const unfilteredData = await hospGet(unfilteredUrl);
+    console.log('[poll:debug] unfiltered raw response:', JSON.stringify(unfilteredData, null, 2).slice(0, 1500));
+    const unfilteredReservations = parseReservations(unfilteredData);
+    console.log(`[poll:debug] unfiltered reservations count: ${unfilteredReservations.length}`);
+    if (unfilteredReservations.length) {
+      unfilteredReservations.slice(0, 3).forEach(r => {
+        console.log(`[poll:debug]   reservation ${r.id} | platform=${r.platform} | last_message_at=${r.last_message_at} | status=${r.reservation_status?.current?.category ?? r.status}`);
+      });
+    }
+    // ── END DEBUG ─────────────────────────────────────────────────────────────
+
+    const reservations = filteredReservations;
+    if (!reservations.length) {
+      console.log(`[poll] No reservations with messages in last 90s (pollingSince=${pollingSince})`);
     }
 
     for (const reservation of reservations) {
       const reservationId = reservation.id;
       const msgData = await hospGet(`/reservations/${reservationId}/messages?per_page=10`);
+      console.log(`[poll:debug] messages for ${reservationId}:`, JSON.stringify(msgData, null, 2).slice(0, 800));
       const messages = parseMessages(msgData);
 
       for (const msg of messages) {
+        console.log(`[poll:debug]   msg platform_id=${msg.platform_id} sender_type=${msg.sender_type} created_at=${msg.created_at} body="${(msg.body||'').slice(0,60)}"`);
         if (msg.sender_type !== 'guest') continue;
 
         const key = messageKey(reservationId, msg);
-        if (seenMessageIds.has(key)) continue;
+        if (seenMessageIds.has(key)) {
+          console.log(`[poll:debug]   skipping — already seen (key=${key})`);
+          continue;
+        }
         seenMessageIds.add(key);
         if (seenMessageIds.size > 2000) {
           seenMessageIds.delete(seenMessageIds.values().next().value);
         }
 
-        // Skip messages older than pollingSince (pre-startup inbox)
-        if (msg.created_at && msg.created_at < pollingSince) continue;
+        if (msg.created_at && msg.created_at < pollingSince) {
+          console.log(`[poll:debug]   skipping — older than pollingSince (${msg.created_at} < ${pollingSince})`);
+          continue;
+        }
 
         const body = (msg.body || '').trim();
         if (!body) continue;
