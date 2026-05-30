@@ -23,7 +23,7 @@
   .nav a:hover { color: var(--text); background: var(--surface2); }
   .nav a.active { color: var(--text); background: var(--surface2); }
 
-  main { max-width: 960px; margin: 0 auto; padding: 2rem; }
+  main { max-width: 1100px; margin: 0 auto; padding: 2rem; }
 
   .top-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 1.5rem; }
   .top-bar h2 { font-size: 16px; font-weight: 500; flex: 1; }
@@ -31,68 +31,85 @@
   .btn { padding: 8px 16px; font-size: 13px; font-weight: 500; border-radius: 7px; border: none; cursor: pointer; font-family: var(--font); transition: opacity 0.15s; }
   .btn:hover { opacity: 0.85; }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-green { background: var(--green); color: #000; }
-  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-green  { background: var(--green); color: #000; }
+  .btn-ghost  { background: transparent; border: 1px solid var(--border); color: var(--text); }
   .btn-ghost:hover { background: var(--surface2); }
   .btn-purple { background: var(--purple-dim); color: var(--purple); border: 1px solid #5a2a8a; }
-  .btn-blue { background: var(--blue-dim); color: var(--blue); border: 1px solid #1a3a7a; }
-  .btn-amber { background: var(--amber-dim); color: var(--amber); border: 1px solid #5a3f0a; }
+  .btn-blue   { background: var(--blue-dim);   color: var(--blue);   border: 1px solid #1a3a7a; }
+  .btn-amber  { background: var(--amber-dim);  color: var(--amber);  border: 1px solid #5a3f0a; }
+  .btn-sm     { padding: 5px 11px; font-size: 12px; }
 
-  .grid { display: grid; grid-template-columns: 280px 1fr; gap: 1.5rem; }
+  .grid { display: grid; grid-template-columns: 260px 1fr; gap: 1.5rem; }
 
+  /* Sidebar */
   .sidebar { display: flex; flex-direction: column; gap: 8px; }
-  .prop-btn { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; cursor: pointer; text-align: left; transition: border-color 0.15s; }
+  .prop-btn { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; cursor: pointer; text-align: left; transition: border-color 0.15s; width: 100%; }
   .prop-btn:hover { border-color: #444; }
   .prop-btn.active { border-color: var(--green); background: var(--green-dim); }
   .prop-btn-name { font-size: 14px; font-weight: 500; color: var(--text); }
   .prop-btn-status { font-size: 12px; margin-top: 3px; }
   .has-vault { color: var(--green); }
-  .no-vault { color: var(--muted); }
+  .no-vault  { color: var(--muted); }
 
+  /* Editor */
   .editor { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
   .editor-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; background: var(--surface2); }
-  .editor-title { font-size: 15px; font-weight: 500; flex: 1; }
-  .editor-body { padding: 18px; }
+  .editor-title  { font-size: 15px; font-weight: 500; flex: 1; }
+  .editor-body   { padding: 18px; }
 
-  .field { margin-bottom: 1.25rem; }
-  .field-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.04em; text-transform: uppercase; }
-  .field input, .field textarea { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 10px 12px; font-size: 14px; color: var(--text); font-family: var(--font); line-height: 1.6; }
-  .field input:focus, .field textarea:focus { outline: none; border-color: #444; }
-  .field textarea { resize: vertical; min-height: 100px; }
-  .field textarea.tall { min-height: 160px; }
+  /* Section groups */
+  .section-group { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 1rem; }
+  .section-group-header { background: var(--surface2); padding: 9px 14px; font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .section-group-body { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field-label { font-size: 12px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+  .field input, .field textarea {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 10px 12px; font-size: 14px; color: var(--text);
+    font-family: var(--font); line-height: 1.6;
+  }
+  .field input:focus, .field textarea:focus { outline: none; border-color: #555; }
+  .field textarea { resize: vertical; min-height: 80px; }
+  .field textarea.tall { min-height: 120px; }
+  .field-hint { font-size: 11px; color: var(--muted); opacity: 0.7; }
 
   .action-row { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
 
+  /* Variations */
   .variation-section { margin-top: 1.5rem; border-top: 1px solid var(--border); padding-top: 1.5rem; }
-  .variation-label { font-size: 12px; color: var(--muted); margin-bottom: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
-  .intensity-row { display: flex; gap: 8px; margin-bottom: 1rem; align-items: center; }
-  .intensity-label { font-size: 13px; color: var(--muted); margin-right: 4px; }
+  .variation-label   { font-size: 12px; color: var(--muted); margin-bottom: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .intensity-row     { display: flex; gap: 8px; margin-bottom: 1rem; align-items: center; }
+  .intensity-label   { font-size: 13px; color: var(--muted); margin-right: 4px; }
 
   .variation-card { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 10px; }
-  .variation-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .variation-title { font-size: 14px; font-weight: 500; flex: 1; }
+  .variation-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .variation-title  { font-size: 14px; font-weight: 500; flex: 1; }
   .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px; font-weight: 500; }
-  .badge-light { background: var(--blue-dim); color: var(--blue); border: 1px solid #1a3a7a; }
-  .badge-medium { background: var(--amber-dim); color: var(--amber); border: 1px solid #5a3f0a; }
-  .badge-heavy { background: var(--purple-dim); color: var(--purple); border: 1px solid #5a2a8a; }
-  .variation-desc { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 10px; max-height: 80px; overflow: hidden; position: relative; }
-  .variation-desc::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 30px; background: linear-gradient(transparent, var(--surface2)); }
+  .badge-light  { background: var(--blue-dim);   color: var(--blue);   border: 1px solid #1a3a7a; }
+  .badge-medium { background: var(--amber-dim);  color: var(--amber);  border: 1px solid #5a3f0a; }
+  .badge-heavy  { background: var(--purple-dim); color: var(--purple); border: 1px solid #5a2a8a; }
+  .variation-sections { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+  .variation-section-row { font-size: 13px; line-height: 1.55; }
+  .variation-section-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px; }
+  .variation-section-text  { color: var(--text); max-height: 60px; overflow: hidden; position: relative; }
+  .variation-section-text::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 24px; background: linear-gradient(transparent, var(--surface2)); }
   .variation-actions { display: flex; gap: 6px; }
-
-  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--text); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .empty-state { padding: 3rem; text-align: center; color: var(--muted); }
-  .empty-icon { font-size: 32px; margin-bottom: 10px; }
-
-  .toast { position: fixed; bottom: 2rem; right: 2rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 18px; font-size: 13px; transform: translateY(100px); opacity: 0; transition: all 0.25s; z-index: 999; }
-  .toast.show { transform: translateY(0); opacity: 1; }
-  .toast.success { border-color: var(--green); color: var(--green); }
-  .toast.error { border-color: var(--red); color: var(--red); }
 
   .history-list { margin-top: 1rem; }
   .history-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
   .history-item:last-child { border-bottom: none; }
+
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--text); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-state  { padding: 3rem; text-align: center; color: var(--muted); }
+  .empty-icon   { font-size: 32px; margin-bottom: 10px; }
+
+  .toast { position: fixed; bottom: 2rem; right: 2rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 18px; font-size: 13px; transform: translateY(100px); opacity: 0; transition: all 0.25s; z-index: 999; }
+  .toast.show    { transform: translateY(0); opacity: 1; }
+  .toast.success { border-color: var(--green); color: var(--green); }
+  .toast.error   { border-color: var(--red);   color: var(--red); }
 
   @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
 </style>
@@ -133,17 +150,24 @@
 <div class="toast" id="toast"></div>
 
 <script>
-let properties = [];
-let selectedId = null;
 let vaultData = {};
+let selectedId = null;
 let currentVariation = null;
 
+// ── Field definitions for each Airbnb listing section ────────────────────────
+const SECTIONS = [
+  { id: 'summary',        label: 'Summary',         hint: 'Main intro shown at the top of your listing',              tall: true  },
+  { id: 'the_space',      label: 'The Space',        hint: 'Describe the physical space guests will stay in',          tall: true  },
+  { id: 'guest_access',   label: 'Guest Access',     hint: 'What areas, amenities, or rooms guests can access',        tall: false },
+  { id: 'neighborhood',   label: 'Neighborhood',     hint: 'Overview of the area and nearby attractions',              tall: false },
+  { id: 'getting_around', label: 'Getting Around',   hint: 'Local transport options — subway, bus, rideshare, etc.',   tall: false },
+  { id: 'other_notes',    label: 'Other Notes',      hint: 'Anything else guests should know before they arrive',      tall: false },
+];
+
+// ── Load ─────────────────────────────────────────────────────────────────────
 async function load() {
   try {
-    const [propsRes, vaultRes] = await Promise.all([
-      fetch('/api/queue').then(r => r.json()),
-      fetch('/api/vault').then(r => r.json()),
-    ]);
+    const vaultRes = await fetch('/api/vault').then(r => r.json());
     vaultData = {};
     (vaultRes.vault || []).forEach(e => vaultData[e.id] = e);
     renderSidebar();
@@ -157,11 +181,15 @@ async function importFromHospitable() {
   btn.innerHTML = '<span class="spinner"></span>Importing...';
   btn.disabled = true;
   try {
-    const res = await fetch('/api/vault/import/hospitable', { method: 'POST' });
+    const res  = await fetch('/api/vault/import/hospitable', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showToast(`Imported ${data.imported.length} properties ✓`, 'success');
     await load();
+    if (data.imported.length && !selectedId) {
+      const firstId = Object.keys(vaultData)[0];
+      if (firstId) selectProperty(firstId);
+    }
   } catch(e) {
     showToast('Import failed: ' + e.message, 'error');
   }
@@ -169,6 +197,7 @@ async function importFromHospitable() {
   btn.disabled = false;
 }
 
+// ── Sidebar ──────────────────────────────────────────────────────────────────
 function renderSidebar() {
   const sidebar = document.getElementById('sidebar');
   const ids = Object.keys(vaultData);
@@ -177,10 +206,10 @@ function renderSidebar() {
     return;
   }
   sidebar.innerHTML = ids.map(id => {
-    const entry = vaultData[id];
-    const hasContent = !!(entry.master?.title || entry.master?.description);
+    const entry    = vaultData[id];
+    const hasContent = !!(entry.master?.title || entry.master?.summary);
     return `<button class="prop-btn ${selectedId === id ? 'active' : ''}" onclick="selectProperty('${id}')">
-      <div class="prop-btn-name">${entry.master?.propertyName || id}</div>
+      <div class="prop-btn-name">${esc(entry.master?.propertyName || id)}</div>
       <div class="prop-btn-status ${hasContent ? 'has-vault' : 'no-vault'}">${hasContent ? '● In vault' : '○ Empty'}</div>
     </button>`;
   }).join('');
@@ -193,48 +222,71 @@ function selectProperty(id) {
   renderEditor();
 }
 
+// ── Editor ────────────────────────────────────────────────────────────────────
 function renderEditor() {
-  const entry = vaultData[selectedId];
+  const entry  = vaultData[selectedId];
   if (!entry) return;
   const master = entry.master || {};
   const variations = entry.variations || [];
 
+  const sectionFields = SECTIONS.map(s => `
+    <div class="field">
+      <div class="field-label">${s.label}</div>
+      <textarea id="f-${s.id}" class="${s.tall ? 'tall' : ''}" placeholder="${s.hint}">${esc(master[s.id] || '')}</textarea>
+      <div class="field-hint">→ Airbnb: "${s.label}" section</div>
+    </div>
+  `).join('');
+
   document.getElementById('editorArea').innerHTML = `
     <div class="editor">
       <div class="editor-header">
-        <span class="editor-title">${master.propertyName || selectedId}</span>
-        <button class="btn btn-ghost" style="font-size:12px;" onclick="saveMaster()">Save master</button>
+        <span class="editor-title">${esc(master.propertyName || selectedId)}</span>
+        <button class="btn btn-ghost btn-sm" onclick="saveMaster()">Save</button>
       </div>
       <div class="editor-body">
-        <div class="field">
-          <div class="field-label">Title</div>
-          <input type="text" id="f-title" value="${esc(master.title || '')}" placeholder="Your listing title..." />
+
+        <div class="section-group">
+          <div class="section-group-header">Listing Title</div>
+          <div class="section-group-body">
+            <div class="field">
+              <div class="field-label">Title</div>
+              <input type="text" id="f-title" value="${esc(master.title || '')}" placeholder="Your listing title (max 50 chars)" maxlength="50" />
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <div class="field-label">Description</div>
-          <textarea id="f-desc" class="tall" placeholder="Full listing description...">${esc(master.description || '')}</textarea>
+
+        <div class="section-group">
+          <div class="section-group-header">Airbnb Listing Sections</div>
+          <div class="section-group-body">${sectionFields}</div>
         </div>
-        <div class="field">
-          <div class="field-label">House rules</div>
-          <textarea id="f-rules" placeholder="Your house rules...">${esc(master.houseRules || '')}</textarea>
-        </div>
-        <div class="field">
-          <div class="field-label">Custom notes for Claude</div>
-          <textarea id="f-notes" placeholder="Anything Claude should always keep in mind — unique features, specific facts, things never to change...">${esc(master.customNotes || '')}</textarea>
+
+        <div class="section-group">
+          <div class="section-group-header">House Rules &amp; Notes</div>
+          <div class="section-group-body">
+            <div class="field">
+              <div class="field-label">House Rules</div>
+              <textarea id="f-houseRules" placeholder="No smoking, no parties, quiet hours after 10pm...">${esc(master.houseRules || '')}</textarea>
+            </div>
+            <div class="field">
+              <div class="field-label">Custom Notes for Claude</div>
+              <textarea id="f-customNotes" placeholder="Facts Claude must always preserve — unique features, specific access codes, things never to change...">${esc(master.customNotes || '')}</textarea>
+              <div class="field-hint">Not pushed to Airbnb — used only when generating variations</div>
+            </div>
+          </div>
         </div>
 
         <div class="action-row">
           <button class="btn btn-green" onclick="saveMaster()">Save master content</button>
-          <button class="btn btn-blue" onclick="pushToHospitable(master.title, master.description, master.houseRules)" id="pushMasterBtn">Push master to Hospitable</button>
+          <button class="btn btn-blue" onclick="pushToHospitable(getMasterPayload())">Push master to Hospitable →</button>
         </div>
 
         <div class="variation-section">
           <div class="variation-label">Generate variation for redeployment</div>
           <div class="intensity-row">
-            <span class="intensity-label">Variation level:</span>
-            <button class="btn badge-light" onclick="generateVariation('light')" id="btn-light">Light</button>
+            <span class="intensity-label">Level:</span>
+            <button class="btn badge-light"  onclick="generateVariation('light')"  id="btn-light">Light</button>
             <button class="btn badge-medium" onclick="generateVariation('medium')" id="btn-medium">Medium</button>
-            <button class="btn badge-heavy" onclick="generateVariation('heavy')" id="btn-heavy">Heavy</button>
+            <button class="btn badge-heavy"  onclick="generateVariation('heavy')"  id="btn-heavy">Heavy</button>
           </div>
           <div id="variationOutput"></div>
 
@@ -245,34 +297,46 @@ function renderEditor() {
                 <div class="history-item">
                   <span class="badge badge-${v.intensity}">${v.intensity}</span>
                   <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(v.title)}</span>
-                  <button class="btn btn-ghost" style="font-size:11px; padding:4px 10px;" onclick='pushVariation(${JSON.stringify(v)})'>Push</button>
+                  <button class="btn btn-ghost btn-sm" onclick='pushToHospitable(${JSON.stringify(v)})'>Push</button>
                 </div>
               `).join('')}
             </div>
           ` : ''}
         </div>
+
       </div>
     </div>
   `;
 }
 
-async function saveMaster() {
-  const title = document.getElementById('f-title').value.trim();
-  const description = document.getElementById('f-desc').value.trim();
-  const houseRules = document.getElementById('f-rules').value.trim();
-  const customNotes = document.getElementById('f-notes').value.trim();
-  const propertyName = vaultData[selectedId]?.master?.propertyName || selectedId;
+function getMasterPayload() {
+  return {
+    title:          (document.getElementById('f-title')?.value         || '').trim(),
+    summary:        (document.getElementById('f-summary')?.value       || '').trim(),
+    the_space:      (document.getElementById('f-the_space')?.value     || '').trim(),
+    guest_access:   (document.getElementById('f-guest_access')?.value  || '').trim(),
+    neighborhood:   (document.getElementById('f-neighborhood')?.value  || '').trim(),
+    getting_around: (document.getElementById('f-getting_around')?.value|| '').trim(),
+    other_notes:    (document.getElementById('f-other_notes')?.value   || '').trim(),
+    houseRules:     (document.getElementById('f-houseRules')?.value    || '').trim(),
+    customNotes:    (document.getElementById('f-customNotes')?.value   || '').trim(),
+    propertyName:   vaultData[selectedId]?.master?.propertyName || selectedId,
+  };
+}
 
-  if (!title || !description) { showToast('Title and description are required', 'error'); return; }
+// ── Save master ───────────────────────────────────────────────────────────────
+async function saveMaster() {
+  const payload = getMasterPayload();
+  if (!payload.title) { showToast('Title is required', 'error'); return; }
 
   const res = await fetch(`/api/vault/${selectedId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, description, houseRules, customNotes, propertyName }),
+    body: JSON.stringify(payload),
   });
   if (res.ok) {
     vaultData[selectedId] = vaultData[selectedId] || {};
-    vaultData[selectedId].master = { title, description, houseRules, customNotes, propertyName };
+    vaultData[selectedId].master = payload;
     showToast('Master content saved ✓', 'success');
     renderSidebar();
   } else {
@@ -280,18 +344,17 @@ async function saveMaster() {
   }
 }
 
+// ── Generate variation ────────────────────────────────────────────────────────
 async function generateVariation(intensity) {
   const master = vaultData[selectedId]?.master;
-  if (!master?.title || !master?.description) {
-    showToast('Save master content first', 'error'); return;
-  }
-  ['light','medium','heavy'].forEach(i => {
-    document.getElementById('btn-' + i).disabled = true;
-  });
-  document.getElementById('variationOutput').innerHTML = `<div style="padding:1rem; color:var(--muted); font-size:13px;"><span class="spinner"></span>Claude is generating a ${intensity} variation...</div>`;
+  if (!master?.title) { showToast('Save master content first', 'error'); return; }
+
+  ['light','medium','heavy'].forEach(i => document.getElementById('btn-' + i).disabled = true);
+  document.getElementById('variationOutput').innerHTML =
+    `<div style="padding:1rem; color:var(--muted); font-size:13px;"><span class="spinner"></span>Claude is generating a ${intensity} variation...</div>`;
 
   try {
-    const res = await fetch(`/api/vault/${selectedId}/variation`, {
+    const res  = await fetch(`/api/vault/${selectedId}/variation`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ intensity }),
@@ -303,46 +366,51 @@ async function generateVariation(intensity) {
     vaultData[selectedId].variations.unshift(data.variation);
     renderVariationOutput(data.variation);
   } catch(e) {
-    document.getElementById('variationOutput').innerHTML = `<div style="color:var(--red); font-size:13px; padding:8px 0;">❌ ${e.message}</div>`;
+    document.getElementById('variationOutput').innerHTML =
+      `<div style="color:var(--red); font-size:13px; padding:8px 0;">❌ ${e.message}</div>`;
   }
-  ['light','medium','heavy'].forEach(i => {
-    document.getElementById('btn-' + i).disabled = false;
-  });
+  ['light','medium','heavy'].forEach(i => document.getElementById('btn-' + i).disabled = false);
 }
 
 function renderVariationOutput(v) {
+  const previewSections = SECTIONS
+    .filter(s => v[s.id])
+    .map(s => `
+      <div class="variation-section-row">
+        <div class="variation-section-label">${s.label}</div>
+        <div class="variation-section-text">${esc(v[s.id])}</div>
+      </div>
+    `).join('');
+
   document.getElementById('variationOutput').innerHTML = `
     <div class="variation-card">
       <div class="variation-header">
         <span class="variation-title">${esc(v.title)}</span>
         <span class="badge badge-${v.intensity}">${v.intensity}</span>
       </div>
-      <div class="field-label" style="margin-bottom:4px;">Description preview</div>
-      <div class="variation-desc" style="max-height:none;">${esc(v.description)}</div>
-      <div class="variation-actions" style="margin-top:12px;">
-        <button class="btn btn-green" onclick='pushVariation(${JSON.stringify(v)})'>Push to Hospitable →</button>
+      <div class="variation-sections">${previewSections}</div>
+      <div class="variation-actions">
+        <button class="btn btn-green" onclick='pushToHospitable(${JSON.stringify(v)})'>Push to Hospitable →</button>
         <button class="btn btn-ghost" onclick="copyVariation()">Copy text</button>
       </div>
     </div>
   `;
 }
 
-async function pushVariation(v) {
-  await pushToHospitable(v.title, v.description, v.houseRules);
-}
-
-async function pushToHospitable(title, description, houseRules) {
-  if (!title || !description) { showToast('No content to push', 'error'); return; }
-  if (!confirm(`Push this content to Hospitable for "${vaultData[selectedId]?.master?.propertyName}"?\n\nTitle: ${title}`)) return;
+// ── Push to Hospitable ────────────────────────────────────────────────────────
+async function pushToHospitable(payload) {
+  if (!payload?.title) { showToast('No content to push', 'error'); return; }
+  const name = vaultData[selectedId]?.master?.propertyName || selectedId;
+  if (!confirm(`Push to Hospitable for "${name}"?\n\nTitle: ${payload.title}`)) return;
   try {
-    const res = await fetch(`/api/vault/${selectedId}/push`, {
+    const res  = await fetch(`/api/vault/${selectedId}/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, description, houseRules }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    showToast('Pushed to Hospitable ✓ — will sync to Airbnb shortly', 'success');
+    showToast('Pushed to Hospitable ✓ — Airbnb will sync shortly', 'success');
   } catch(e) {
     showToast('Push failed: ' + e.message, 'error');
   }
@@ -350,8 +418,12 @@ async function pushToHospitable(title, description, houseRules) {
 
 function copyVariation() {
   if (!currentVariation) return;
-  const text = `TITLE:\n${currentVariation.title}\n\nDESCRIPTION:\n${currentVariation.description}\n\nHOUSE RULES:\n${currentVariation.houseRules}`;
-  navigator.clipboard.writeText(text).then(() => showToast('Copied to clipboard ✓', 'success'));
+  const v = currentVariation;
+  const lines = [`TITLE:\n${v.title}`];
+  SECTIONS.forEach(s => { if (v[s.id]) lines.push(`${s.label.toUpperCase()}:\n${v[s.id]}`); });
+  if (v.houseRules) lines.push(`HOUSE RULES:\n${v.houseRules}`);
+  navigator.clipboard.writeText(lines.join('\n\n'))
+    .then(() => showToast('Copied to clipboard ✓', 'success'));
 }
 
 function showToast(msg, type) {

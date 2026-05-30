@@ -434,9 +434,9 @@ app.get('/api/vault/:propertyId', (req, res) => {
 
 // Save/update master content
 app.post('/api/vault/:propertyId', (req, res) => {
-  const { title, description, houseRules, customNotes, propertyName } = req.body;
-  if (!title || !description) return res.status(400).json({ error: 'title and description required' });
-  vault.saveToVault(req.params.propertyId, { title, description, houseRules, customNotes, propertyName });
+  const { title, summary, the_space, guest_access, neighborhood, getting_around, other_notes, houseRules, customNotes, propertyName } = req.body;
+  if (!title) return res.status(400).json({ error: 'title required' });
+  vault.saveToVault(req.params.propertyId, { title, summary, the_space, guest_access, neighborhood, getting_around, other_notes, houseRules, customNotes, propertyName });
   res.json({ ok: true });
 });
 
@@ -450,10 +450,15 @@ app.post('/api/vault/import/hospitable', async (req, res) => {
       const id = p.id;
       const name = p.public_name || p.name || id;
       const title = p.public_name || p.name || '';
-      const description = p.description || p.summary || '';
+      const summary = p.description || p.summary || '';
+      const the_space = p.space_overview || p.the_space || '';
+      const guest_access = p.guest_access || p.access || '';
+      const neighborhood = p.neighborhood_description || p.neighborhood_overview || p.directions || '';
+      const getting_around = p.getting_around || p.transit || '';
+      const other_notes = p.other_details || p.other_notes || p.notes || '';
       const houseRules = formatHouseRules(p.house_rules);
-      if (title || description) {
-        vault.saveToVault(id, { title, description, houseRules, propertyName: name });
+      if (title || summary) {
+        vault.saveToVault(id, { title, summary, the_space, guest_access, neighborhood, getting_around, other_notes, houseRules, propertyName: name });
         imported.push(name);
       }
     }
@@ -476,9 +481,22 @@ app.post('/api/vault/:propertyId/variation', async (req, res) => {
 
 // Push a variation (or master) to Hospitable
 app.post('/api/vault/:propertyId/push', async (req, res) => {
-  const { title, description, houseRules } = req.body;
+  const { title, summary, the_space, guest_access, neighborhood, getting_around, other_notes, houseRules } = req.body;
   const propertyId = req.params.propertyId;
   try {
+    const payload = {
+      name:                     title        || undefined,
+      description:              summary      || undefined,
+      space_overview:           the_space    || undefined,
+      guest_access:             guest_access || undefined,
+      neighborhood_description: neighborhood || undefined,
+      getting_around:           getting_around || undefined,
+      other_details:            other_notes  || undefined,
+      house_rules:              houseRules   || undefined,
+    };
+    // Strip undefined keys so Hospitable doesn't overwrite fields with blank values
+    Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
+
     const r = await fetch(`https://public.api.hospitable.com/v2/properties/${propertyId}`, {
       method: 'PATCH',
       headers: {
@@ -486,7 +504,7 @@ app.post('/api/vault/:propertyId/push', async (req, res) => {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
-      body: JSON.stringify({ data: { attributes: { name: title, description, house_rules: houseRules } } }),
+      body: JSON.stringify(payload),
     });
     if (!r.ok) {
       const err = await r.text();
