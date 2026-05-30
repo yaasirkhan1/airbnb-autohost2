@@ -762,19 +762,20 @@ app.get('/api/pricing', async (req, res) => {
     for (const p of properties) {
       try {
         const calData = await hospGet(`/properties/${p.id}/calendar?start_date=${start}&end_date=${end}`);
-        // Expose raw top-level shape for debugging
-        const rawTopKeys = typeof calData === 'object' && calData ? Object.keys(calData) : [];
         const rawDataVal = calData?.data;
-        // Calendar can be: array, {data:[...]}, {data:{"date":{...}}}, or {"date":{...}} directly
+        // Hospitable returns {data:{listing_id,provider,start_date,end_date,days:[{date,price,available,...}]}}
+        // Fallbacks: data is array, top-level array, or date-keyed object
         let days;
-        if (Array.isArray(calData)) {
+        if (Array.isArray(rawDataVal?.days)) {
+          days = rawDataVal.days;
+        } else if (Array.isArray(calData)) {
           days = calData;
         } else if (Array.isArray(rawDataVal)) {
           days = rawDataVal;
         } else if (rawDataVal && typeof rawDataVal === 'object') {
+          // date-keyed: {'2026-06-11': {price, available}}
           days = Object.entries(rawDataVal).map(([date, v]) => ({ date, ...v }));
         } else if (typeof calData === 'object' && calData) {
-          // top-level date-keyed object
           days = Object.entries(calData).map(([date, v]) => ({ date, ...v }));
         } else {
           days = [];
@@ -782,7 +783,7 @@ app.get('/api/pricing', async (req, res) => {
         results.push({
           id:         p.id,
           name:       p.public_name || p.name,
-          raw_sample: days[0] || null,
+          raw_sample: rawDataVal?.days?.[0] ?? days[0] ?? null,
           days:       days.map(d => ({
             date:      d.date || d.Date || null,
             price:     d.price?.amount != null ? d.price.amount / 100
