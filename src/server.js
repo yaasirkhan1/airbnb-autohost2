@@ -212,78 +212,103 @@ async function pollForNewMessages() {
   if (!knownPropertyIds.length || !pollingSince) return;
   if (!process.env.HOSPITABLE_API_KEY) return;
 
+  // ── Reservations (covers bookings + booking-requests) ──────────────────────
+  await pollReservationMessages();
+
+  // ── Inquiries (covers pre-booking messages with no reservation yet) ─────────
+  await pollInquiryMessages();
+}
+
+async function pollReservationMessages() {
   try {
     const since = new Date(Date.now() - 90 * 1000).toISOString();
-    const qs = buildPropertyQs();
+    const qs    = buildPropertyQs();
+    const data  = await hospGet(`/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
+    const reservations = parseReservations(data);
 
-    // ── DEBUG: filtered poll ──────────────────────────────────────────────────
-    const filteredUrl = `/reservations?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`;
-    console.log(`[poll:debug] GET ${filteredUrl}`);
-    const filteredData = await hospGet(filteredUrl);
-    console.log('[poll:debug] filtered raw response:', JSON.stringify(filteredData, null, 2).slice(0, 1500));
-    const filteredReservations = parseReservations(filteredData);
-    console.log(`[poll:debug] filtered reservations count: ${filteredReservations.length}`);
-
-    // ── DEBUG: unfiltered poll (no last_message_at) to see if ANY come back ──
-    const unfilteredUrl = `/reservations?${qs}&per_page=10`;
-    console.log(`[poll:debug] GET ${unfilteredUrl}`);
-    const unfilteredData = await hospGet(unfilteredUrl);
-    console.log('[poll:debug] unfiltered raw response:', JSON.stringify(unfilteredData, null, 2).slice(0, 1500));
-    const unfilteredReservations = parseReservations(unfilteredData);
-    console.log(`[poll:debug] unfiltered reservations count: ${unfilteredReservations.length}`);
-    if (unfilteredReservations.length) {
-      unfilteredReservations.slice(0, 3).forEach(r => {
-        console.log(`[poll:debug]   reservation ${r.id} | platform=${r.platform} | last_message_at=${r.last_message_at} | status=${r.reservation_status?.current?.category ?? r.status}`);
-      });
-    }
-    // ── END DEBUG ─────────────────────────────────────────────────────────────
-
-    const reservations = filteredReservations;
-    if (!reservations.length) {
-      console.log(`[poll] No reservations with messages in last 90s (pollingSince=${pollingSince})`);
+    if (reservations.length) {
+      console.log(`[poll/res] ${reservations.length} reservation(s) with recent messages`);
     }
 
     for (const reservation of reservations) {
-      const reservationId = reservation.id;
-      const msgData = await hospGet(`/reservations/${reservationId}/messages?per_page=10`);
-      console.log(`[poll:debug] messages for ${reservationId}:`, JSON.stringify(msgData, null, 2).slice(0, 800));
-      const messages = parseMessages(msgData);
+      await processNewMessages(
+        reservation.id,
+        'reservation',
+        `/reservations/${reservation.id}/messages?per_page=10`,
+      );
+    }
+  } catch (e) {
+    console.error('[poll/res] Error:', e.message);
+  }
+}
 
-      for (const msg of messages) {
-        console.log(`[poll:debug]   msg platform_id=${msg.platform_id} sender_type=${msg.sender_type} created_at=${msg.created_at} body="${(msg.body||'').slice(0,60)}"`);
-        if (msg.sender_type !== 'guest') continue;
+// Inquiry endpoints were added to the Hospitable API in Sept 2024 but are not
+// yet in the public OpenAPI spec. We probe them optimistically and back off if
+// the endpoint is unavailable (404) or not scoped (403).
+let inquiriesUnavailable = false;
 
-        const key = messageKey(reservationId, msg);
-        if (seenMessageIds.has(key)) {
-          console.log(`[poll:debug]   skipping — already seen (key=${key})`);
-          continue;
-        }
-        seenMessageIds.add(key);
-        if (seenMessageIds.size > 2000) {
-          seenMessageIds.delete(seenMessageIds.values().next().value);
-        }
+async function pollInquiryMessages() {
+  if (inquiriesUnavailable) return;
 
-        if (msg.created_at && msg.created_at < pollingSince) {
-          console.log(`[poll:debug]   skipping — older than pollingSince (${msg.created_at} < ${pollingSince})`);
-          continue;
-        }
+  try {
+    const since = new Date(Date.now() - 90 * 1000).toISOString();
+    const data  = await hospGet(`/inquiries?last_message_at=${encodeURIComponent(since)}&per_page=50`);
+    const inquiries = parseInquiries(data);
 
-        const body = (msg.body || '').trim();
-        if (!body) continue;
+    if (inquiries.length) {
+      console.log(`[poll/inq] ${inquiries.length} inquir${inquiries.length === 1 ? 'y' : 'ies'} with recent messages`);
+    }
 
-        const guestName = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
-        console.log(`[poll] 📨 New message — "${guestName}" on reservation ${reservationId}: "${body.slice(0, 80)}"`);
+    for (const inquiry of inquiries) {
+      await processNewMessages(
+        inquiry.id,
+        'inquiry',
+        `/inquiries/${inquiry.id}/messages?per_page=10`,
+      );
+    }
+  } catch (e) {
+    if (e.message.includes('404') || e.message.includes('403')) {
+      inquiriesUnavailable = true;
+      console.log(`[poll/inq] Inquiry endpoint unavailable (${e.message.split(':')[0]}) — skipping in future polls. To enable: contact team-platform@hospitable.com for inquiry:read scope.`);
+    } else {
+      console.error('[poll/inq] Error:', e.message);
+    }
+  }
+}
 
-        try {
-          const draft = await draftReply(guestName, body, 'your listing', null);
-          scheduleReply(reservationId, guestName, body, draft, 'your listing', null);
-        } catch (e) {
-          console.error(`[poll] Error drafting reply for reservation ${reservationId}: ${e.message}`);
-        }
+async function processNewMessages(resourceId, resourceType, messagesPath) {
+  try {
+    const msgData = await hospGet(messagesPath);
+    const messages = parseMessages(msgData);
+
+    for (const msg of messages) {
+      if (msg.sender_type !== 'guest') continue;
+
+      const key = messageKey(resourceId, msg);
+      if (seenMessageIds.has(key)) continue;
+      seenMessageIds.add(key);
+      if (seenMessageIds.size > 2000) {
+        seenMessageIds.delete(seenMessageIds.values().next().value);
+      }
+
+      if (msg.created_at && msg.created_at < pollingSince) continue;
+
+      const body = (msg.body || '').trim();
+      if (!body) continue;
+
+      const guestName = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
+      console.log(`[poll/${resourceType.slice(0, 3)}] 📨 "${guestName}" (${resourceId}): "${body.slice(0, 80)}"`);
+
+      try {
+        const draft = await draftReply(guestName, body, 'your listing', null);
+        // Both reservations and inquiries use the same resourceId for sending
+        scheduleReply(resourceId, guestName, body, draft, 'your listing', null);
+      } catch (e) {
+        console.error(`[poll/${resourceType.slice(0, 3)}] Error drafting reply: ${e.message}`);
       }
     }
   } catch (e) {
-    console.error('[poll] Error during poll:', e.message);
+    console.error(`[poll/${resourceType.slice(0, 3)}] Error fetching messages for ${resourceId}: ${e.message}`);
   }
 }
 
@@ -304,6 +329,13 @@ function parseMessages(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.data)) return data.data;
   if (Array.isArray(data?.messages)) return data.messages;
+  return [];
+}
+
+function parseInquiries(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.inquiries)) return data.inquiries;
   return [];
 }
 
