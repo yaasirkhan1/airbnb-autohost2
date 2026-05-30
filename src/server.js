@@ -864,16 +864,16 @@ app.put('/api/pricing', async (req, res) => {
   res.json({ updated: results.filter(r => r.ok).length, total: results.length, results });
 });
 
-// Temporary: probe what body shape Hospitable calendar PUT actually accepts
+// Probe: raw Hospitable calendar PUT with full response, no truncation
+// GET /api/pricing/probe?id=PROPERTY_UUID
 app.get('/api/pricing/probe', async (req, res) => {
-  const propId = '5a8cafc2-baa9-4fdb-b6dc-773bfcfb75bc';
-  const day = { date: '2026-07-20', price: { amount: 19900 } }; // safe future date outside booking window
+  const propId = req.query.id || '1af8fdde-58ee-426e-8374-6530397347e8'; // WC Apartment Premier
+  const day = { date: '2026-07-20', price: { amount: 19900 } };
   const candidates = [
-    { label: 'array',            body: [day] },
-    { label: 'data_array',       body: { data: [day] } },
+    { label: 'plain_array',      body: [day] },
     { label: 'dates_array',      body: { dates: [day] } },
+    { label: 'data_array',       body: { data: [day] } },
     { label: 'dates_data_array', body: { dates: { data: [day] } } },
-    { label: 'days_array',       body: { days: [day] } },
   ];
   const out = [];
   for (const c of candidates) {
@@ -884,13 +884,14 @@ app.get('/api/pricing/probe', async (req, res) => {
         body: JSON.stringify(c.body),
       });
       const text = await r.text();
-      out.push({ label: c.label, status: r.status, body: text.slice(0, 300) });
+      // Return full body, no truncation
+      out.push({ label: c.label, status: r.status, body: text });
     } catch (e) {
       out.push({ label: c.label, error: e.message });
     }
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 300));
   }
-  res.json(out);
+  res.json({ property_id: propId, results: out });
 });
 
 app.post('/api/notify', async (req, res) => {
