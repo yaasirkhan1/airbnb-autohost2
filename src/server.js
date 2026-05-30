@@ -67,22 +67,25 @@ async function hospGet(apiPath) {
 }
 
 // ─── History learning ─────────────────────────────────────────────────────────
+// The Hospitable public API has no /conversations endpoint.
+// Reservations are the correct resource; messages live at /reservations/{id}/messages.
 
-async function fetchConversationsForProperty(propertyId, limit = 40) {
+async function fetchReservationsForProperty(propertyId, limit = 40) {
   try {
-    const data = await hospGet(`/conversations?filter[property_id]=${propertyId}&per_page=${limit}&include=messages`);
-    return data.data || [];
+    const data = await hospGet(`/reservations?properties[]=${propertyId}&per_page=${limit}&include=guest`);
+    return parseReservations(data);
   } catch (e) {
-    console.error(`[learn] Could not fetch conversations for ${propertyId}:`, e.message);
+    console.error(`[learn] Could not fetch reservations for ${propertyId}:`, e.message);
     return [];
   }
 }
 
-async function fetchMessagesForConversation(conversationId) {
+async function fetchMessagesForReservation(reservationId) {
   try {
-    const data = await hospGet(`/conversations/${conversationId}/messages?per_page=20`);
-    return data.data || [];
+    const data = await hospGet(`/reservations/${reservationId}/messages?per_page=20`);
+    return parseMessages(data);
   } catch (e) {
+    console.error(`[learn] Could not fetch messages for reservation ${reservationId}:`, e.message);
     return [];
   }
 }
@@ -90,21 +93,21 @@ async function fetchMessagesForConversation(conversationId) {
 async function learnPropertyProfile(propertyId, propertyName) {
   console.log(`[learn] Building profile for property: ${propertyName} (${propertyId})`);
 
-  const conversations = await fetchConversationsForProperty(propertyId, 40);
-  if (!conversations.length) {
-    console.log(`[learn] No conversations found for ${propertyName}`);
+  const reservations = await fetchReservationsForProperty(propertyId, 40);
+  if (!reservations.length) {
+    console.log(`[learn] No reservations found for ${propertyName}`);
     return null;
   }
 
-  // Build Q&A pairs from history
+  // Build Q&A pairs from message history
   const pairs = [];
-  for (const convo of conversations.slice(0, 25)) {
-    const convoId = convo.id;
-    const messages = await fetchMessagesForConversation(convoId);
+  for (const reservation of reservations.slice(0, 25)) {
+    const messages = await fetchMessagesForReservation(reservation.id);
     let lastGuest = null;
     for (const msg of messages) {
-      const sender = msg.attributes?.sender_type || msg.sender_type;
-      const body = msg.attributes?.body || msg.body || '';
+      // Message schema (v2) uses flat fields — no attributes nesting
+      const sender = msg.sender_type;
+      const body   = msg.body || '';
       if (!body.trim()) continue;
       if (sender === 'guest') {
         lastGuest = body;
@@ -187,14 +190,19 @@ async function initAllPropertyProfiles() {
 async function warmUpSeenMessages() {
   if (!knownPropertyIds.length) return;
   console.log('[poll] Warm-up — marking existing inbox messages as seen...');
+  // Fetch recent reservations (default window = next 2 weeks per spec)
+  // properties[] is a required param on GET /reservations
   const qs = buildPropertyQs();
-  const data = await hospGet(`/reservations?${qs}&per_page=50`);
+  const data = await hospGet(`/reservations?${qs}&per_page=50&include=guest`);
   const reservations = parseReservations(data);
+  console.log(`[poll] Warm-up: found ${reservations.length} reservations to scan`);
   for (const r of reservations) {
-    const msgData = await hospGet(`/reservations/${r.id}/messages?per_page=20`);
-    const messages = parseMessages(msgData);
-    for (const m of messages) {
-      seenMessageIds.add(messageKey(r.id, m));
+    try {
+      const msgData = await hospGet(`/reservations/${r.id}/messages?per_page=20`);
+      const messages = parseMessages(msgData);
+      for (const m of messages) seenMessageIds.add(messageKey(r.id, m));
+    } catch (e) {
+      console.warn(`[poll] Warm-up: could not fetch messages for reservation ${r.id}: ${e.message}`);
     }
   }
   console.log(`[poll] Warm-up done — ${seenMessageIds.size} existing messages marked seen`);
@@ -450,16 +458,18 @@ app.post('/webhook/hospitable', async (req, res) => {
   }
   seenMessageIds.add(wKey);
 
-  // Fetch conversation to get property info (Message schema has no property fields)
+  // Fetch reservation to get property info (/conversations endpoint does not exist in v2 API)
   let propertyId   = null;
   let propertyName = 'your listing';
   try {
-    const convo = await hospGet(`/conversations/${conversationId}`);
-    propertyId   = convo.data?.property_id || convo.property_id || null;
-    propertyName = convo.data?.property_name || convo.property_name || 'your listing';
+    const resData = await hospGet(`/reservations/${reservationId}?include=properties`);
+    const res = resData.data || resData;
+    const prop = res.properties?.[0] || res.property || null;
+    propertyId   = prop?.id   || null;
+    propertyName = prop?.public_name || prop?.name || 'your listing';
     console.log(`[webhook] Property: "${propertyName}" (${propertyId})`);
   } catch (e) {
-    console.warn(`[webhook] Could not fetch conversation for property info: ${e.message}`);
+    console.warn(`[webhook] Could not fetch reservation for property info: ${e.message}`);
   }
 
   // Kick off profile learning for unknown properties (non-blocking)
