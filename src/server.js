@@ -132,6 +132,7 @@ async function initAllPropertyProfiles() {
   try {
     console.log('[learn] Fetching all properties...');
     const data = await hospGet('/properties?per_page=50');
+    console.log('[debug] /properties raw response:', JSON.stringify(data, null, 2));
     const properties = data.data || data.properties || [];
     console.log(`[learn] Found ${properties.length} properties — building profiles...`);
     for (const p of properties) {
@@ -425,6 +426,7 @@ app.post('/api/vault/:propertyId', (req, res) => {
 app.post('/api/vault/import/hospitable', async (req, res) => {
   try {
     const data = await hospGet('/properties?per_page=50');
+    console.log('[debug] /vault/import/hospitable raw response:', JSON.stringify(data, null, 2));
     const properties = data.data || data.properties || [];
     const imported = [];
     for (const p of properties) {
