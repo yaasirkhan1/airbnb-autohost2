@@ -762,16 +762,20 @@ app.get('/api/pricing', async (req, res) => {
     for (const p of properties) {
       try {
         const calData = await hospGet(`/properties/${p.id}/calendar?start_date=${start}&end_date=${end}`);
+        // Return raw so we can inspect the actual API shape
         const days = Array.isArray(calData) ? calData
           : Array.isArray(calData?.data) ? calData.data
-          : Object.values(calData?.data || calData || {});
+          : Array.isArray(calData?.days) ? calData.days
+          : [];
         results.push({
-          id:     p.id,
-          name:   p.public_name || p.name,
-          days:   days.map(d => ({
-            date:      d.date,
-            price:     d.price?.amount != null ? d.price.amount / 100 : (d.price?.formatted || null),
-            currency:  d.price?.currency || 'USD',
+          id:       p.id,
+          name:     p.public_name || p.name,
+          raw_keys: days[0] ? Object.keys(days[0]) : [],
+          raw_sample: days[0] || null,
+          days:     days.map(d => ({
+            date:      d.date || d.day || d.Date || null,
+            price:     d.price?.amount != null ? d.price.amount / 100
+                     : d.price?.formatted || d.nightly_price || d.rate || null,
             available: d.status?.available ?? d.available ?? null,
             min_stay:  d.min_stay || null,
           })),
