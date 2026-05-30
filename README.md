@@ -20,7 +20,32 @@ Replies to guests within seconds, 5-minute cancellation window, live dashboard.
 3. Select `airbnb-autohost`
 4. Railway will auto-detect Node.js and deploy it
 
-### Step 3 — Add environment variables
+### Step 3 — Add a persistent Volume (required for Listing Vault)
+
+By default Railway's filesystem is wiped on every redeploy, so `vault.json`
+would be lost. A Volume pins a folder to permanent storage that survives
+redeploys, restarts, and scaling.
+
+1. In Railway → your project → click **+ New** → **Volume**
+2. Set **Mount Path** to `/data`
+3. Click **Create** — Railway attaches the volume to your service automatically
+
+Then add one environment variable so the app knows where to write:
+
+| Key | Value |
+|-----|-------|
+| `DATA_DIR` | `/data` |
+
+That's it. From now on `vault.json` is written to `/data/vault.json` and
+persists forever across redeploys.
+
+> **No Volume?** The vault still works — data survives restarts but is wiped
+> on each new deploy. Fine for testing; add the Volume before going to
+> production.
+
+---
+
+### Step 4 — Add environment variables
 
 In Railway → your project → **Variables** tab, add:
 
@@ -28,6 +53,7 @@ In Railway → your project → **Variables** tab, add:
 |-----|-------|
 | `HOSPITABLE_API_KEY` | Your Hospitable Bearer token |
 | `ANTHROPIC_API_KEY` | Your Anthropic API key |
+| `DATA_DIR` | `/data` (if you added a Volume in Step 3) |
 | `HOST_NAME` | Your name (e.g. Maria) |
 | `HOST_TONE` | warm and friendly |
 | `CHECKIN_TIME` | 3:00 PM |
@@ -37,12 +63,12 @@ In Railway → your project → **Variables** tab, add:
 | `REPLY_DELAY_MINUTES` | 5 |
 | `AUTOSEND` | true |
 
-### Step 4 — Get your public URL
+### Step 5 — Get your public URL
 
 In Railway → your project → **Settings → Networking → Generate Domain**
 You'll get a URL like: `https://airbnb-autohost-production.up.railway.app`
 
-### Step 5 — Add webhook in Hospitable
+### Step 6 — Add webhook in Hospitable
 
 1. Log into Hospitable
 2. Go to **Settings → API → Webhooks**
@@ -51,7 +77,7 @@ You'll get a URL like: `https://airbnb-autohost-production.up.railway.app`
 5. Events: select **Messages**
 6. Save
 
-### Step 6 — Test it
+### Step 7 — Test it
 
 Send a message to yourself on Airbnb (or have a friend test).
 Watch the dashboard at your Railway URL — you'll see the pending reply with a countdown.
