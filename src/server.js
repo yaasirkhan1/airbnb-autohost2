@@ -1,7 +1,6 @@
 const express    = require('express');
 const crypto     = require('crypto');
 const path       = require('path');
-const twilio = require('twilio');
 const vault      = require('./vault');
 
 const app = express();
@@ -405,23 +404,32 @@ async function callClaude(systemPrompt, userMsg, maxTokens = 800) {
 async function notifyHost({ guestName, messageBody, propertyName }) {
   const logLine = `[notify] ⚠ MANUAL REPLY NEEDED — Guest: "${guestName}" | Property: "${propertyName}" | Message: "${messageBody.slice(0, 120)}"`;
 
-  const sid   = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from  = process.env.TWILIO_FROM_NUMBER;
-  const to    = process.env.NOTIFY_PHONE;
+  const apiKey  = process.env.QUO_API_KEY;
+  const from    = process.env.QUO_FROM_NUMBER;
+  const to      = process.env.NOTIFY_PHONE;
 
-  if (!sid || !token || !from || !to) {
+  if (!apiKey || !from || !to) {
     console.warn(logLine);
-    console.warn('[notify] Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, NOTIFY_PHONE to receive SMS alerts.');
+    console.warn('[notify] Set QUO_API_KEY, QUO_FROM_NUMBER, NOTIFY_PHONE to receive SMS alerts.');
     return;
   }
 
-  const smsBody = `⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Their message: "${messageBody.slice(0, 100)}"`;
+  const smsBody = `⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Message: "${messageBody.slice(0, 100)}"`;
 
   try {
-    const client = twilio(sid, token);
-    await client.messages.create({ body: smsBody, from, to });
-    console.log(`[notify] SMS sent to ${to} for "${guestName}"`);
+    const res = await fetch('https://api.openphone.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Authorization': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ to: [to], from, content: smsBody }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`OpenPhone ${res.status}: ${err}`);
+    }
+    console.log(`[notify] SMS sent via OpenPhone to ${to} for "${guestName}"`);
   } catch (e) {
     console.error(`[notify] SMS failed (${e.message}) — ${logLine}`);
   }
