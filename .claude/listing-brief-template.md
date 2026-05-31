@@ -287,5 +287,5 @@ When filling a per-unit brief, replace these tokens:
 | `[HAS_TRASH_COMP]`| `true` / `false`                                       |
 | `[HAS_CEIL_FAN]`  | `true` / `false`                                       |
 | `[SQFT]`          | Square footage if known (only 21-I has this: 1150)     |
-| `[FOB_FEE]`       | Key fob replacement fee in dollars                     |
+| `[FOB_FEE]`       | $150                                                   |
 | `[MAX_GUESTS]`    | Maximum guest count from Airbnb listing settings       |
