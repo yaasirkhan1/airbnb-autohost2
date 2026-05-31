@@ -9,5 +9,50 @@
     "bedrooms": 1,
     "notes": "Resolved UUID from address scan: only Atlanta 1BR unnamed property",
     "updatedAt": "2026-05-31T08:44:11.270Z"
+  },
+  "bbe43523-c42a-46b0-8235-7ad08ae990c9": {
+    "label": "4-L",
+    "uuid": "bbe43523-c42a-46b0-8235-7ad08ae990c9",
+    "internal_name": "6. (4-L)",
+    "public_name": "World Cup Lodging Flat 10 to 14-Night Rate Short Walk to Arena",
+    "address": "300 Peachtree Road NE, Atlanta, GA",
+    "bedrooms": 1,
+    "checkin": "16:00",
+    "checkout": "11:00",
+    "updatedAt": "2026-05-31T00:00:00.000Z"
+  },
+  "80c21aac-00eb-49af-9094-6792839ff5a4": {
+    "label": "21-D",
+    "uuid": "80c21aac-00eb-49af-9094-6792839ff5a4",
+    "internal_name": "4. (21-D)",
+    "public_name": "World Cup Traveler Package Flat Rate Arena Footsteps Away",
+    "address": "300 Peachtree Road NE, Atlanta, GA",
+    "bedrooms": 1,
+    "checkin": "16:00",
+    "checkout": "11:00",
+    "updatedAt": "2026-05-31T00:00:00.000Z"
+  },
+  "3e702102-a219-4c18-9f88-3a4d1ceb3825": {
+    "label": "24-L",
+    "uuid": "3e702102-a219-4c18-9f88-3a4d1ceb3825",
+    "internal_name": "5. (24-L)",
+    "unit": "24L",
+    "public_name": "World Cup Flat Rate Stay 10 to 14 Nights Walk to Arena",
+    "address": "300 Peachtree Street NE, Atlanta, GA",
+    "bedrooms": 1,
+    "checkin": "16:00",
+    "checkout": "11:00",
+    "updatedAt": "2026-05-31T00:00:00.000Z"
+  },
+  "283977a3-3af3-4d90-8d95-b418a3014d90": {
+    "label": "23-N",
+    "uuid": "283977a3-3af3-4d90-8d95-b418a3014d90",
+    "internal_name": "1. (23-N)",
+    "public_name": "World Cup Traveler Package Flat Rate Arena Footsteps Away",
+    "address": "300 Peachtree Road NE, Atlanta, GA",
+    "bedrooms": 1,
+    "checkin": "16:00",
+    "checkout": "11:00",
+    "updatedAt": "2026-05-31T00:00:00.000Z"
   }
 }

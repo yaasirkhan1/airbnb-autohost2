@@ -289,8 +289,11 @@ async function initAllPropertyProfiles() {
     console.error('[poll] Warm-up error:', e.message);
   }
 
-  // Start polling after warm-up so only truly new messages trigger replies
-  pollingSince = toHospitableDate(new Date());
+  // Start polling after warm-up so only truly new messages trigger replies.
+  // Set pollingSince to match the grace window (5 min back) so that messages
+  // left unseen during warm-up are not also blocked by the pollingSince check.
+  // seenMessageIds deduplication handles the older messages that were marked seen.
+  pollingSince = toHospitableDate(new Date(Date.now() - 5 * 60 * 1000));
   setInterval(pollForNewMessages, 60 * 1000);
   console.log(`[poll] Polling started — checking every 60s (since ${pollingSince})`);
 
@@ -309,31 +312,71 @@ async function initAllPropertyProfiles() {
 async function warmUpSeenMessages() {
   if (!knownPropertyIds.length) return;
   console.log('[poll] Warm-up — marking existing inbox messages as seen...');
-  const qs = buildPropertyQs();
-  const data = await hospGet(`/reservations?${qs}&per_page=50&include=guest`);
-  const reservations = parseReservations(data);
-  console.log(`[poll] Warm-up: found ${reservations.length} reservations to scan`);
 
-  // Grace window: messages younger than 5 minutes are NOT marked seen during warm-up.
-  // This ensures messages sent while the server was redeploying still get a reply.
+  // Grace window: messages younger than 5 minutes are NOT marked seen.
+  // pollingSince is also set to this same cutoff so the two systems stay aligned.
   const graceCutoff = toHospitableDate(new Date(Date.now() - 5 * 60 * 1000));
 
-  for (const r of reservations) {
-    try {
-      const msgData = await hospGet(`/reservations/${r.id}/messages?per_page=20`);
-      const messages = parseMessages(msgData);
-      for (const m of messages) {
-        // Only mark as seen if the message is older than the grace window
-        if (m.created_at && m.created_at > graceCutoff) {
-          console.log(`[poll] Warm-up: leaving recent message unseen for reply (${m.created_at})`);
-          continue;
+  // ── Reservations ────────────────────────────────────────────────────────────
+  try {
+    const qs = buildPropertyQs();
+    const data = await hospGet(`/reservations?${qs}&per_page=50&include=guest`);
+    const reservations = parseReservations(data);
+    console.log(`[poll] Warm-up: found ${reservations.length} reservations to scan`);
+
+    for (const r of reservations) {
+      try {
+        const msgData = await hospGet(`/reservations/${r.id}/messages?per_page=20`);
+        const messages = parseMessages(msgData);
+        for (const m of messages) {
+          if (m.created_at && m.created_at > graceCutoff) {
+            console.log(`[poll] Warm-up: leaving recent reservation message unseen (${m.created_at})`);
+            continue;
+          }
+          seenMessageIds.add(messageKey(r.id, m));
         }
-        seenMessageIds.add(messageKey(r.id, m));
+      } catch (e) {
+        console.warn(`[poll] Warm-up: could not fetch messages for reservation ${r.id}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[poll] Warm-up: could not fetch reservations:', e.message);
+  }
+
+  // ── Inquiries — also warm up so old inquiry messages are not re-processed ───
+  // Pre-booking inquiries are the highest-value messages; we must not miss them
+  // on restart, and we must not double-reply to old ones.
+  if (!inquiriesUnavailable) {
+    try {
+      const data = await hospGet('/inquiries?per_page=50');
+      const inquiries = parseInquiries(data);
+      console.log(`[poll] Warm-up: found ${inquiries.length} inquiries to scan`);
+
+      for (const inq of inquiries) {
+        try {
+          const msgData = await hospGet(`/inquiries/${inq.id}/messages?per_page=20`);
+          const messages = parseMessages(msgData);
+          for (const m of messages) {
+            if (m.created_at && m.created_at > graceCutoff) {
+              console.log(`[poll] Warm-up: leaving recent inquiry message unseen (${m.created_at})`);
+              continue;
+            }
+            seenMessageIds.add(messageKey(inq.id, m));
+          }
+        } catch (e) {
+          console.warn(`[poll] Warm-up: could not fetch messages for inquiry ${inq.id}: ${e.message}`);
+        }
       }
     } catch (e) {
-      console.warn(`[poll] Warm-up: could not fetch messages for reservation ${r.id}: ${e.message}`);
+      if (e.message.includes('404') || e.message.includes('403')) {
+        inquiriesUnavailable = true;
+        console.log(`[poll] Warm-up: inquiry endpoint unavailable — skipping inquiry warm-up`);
+      } else {
+        console.warn('[poll] Warm-up: could not fetch inquiries:', e.message);
+      }
     }
   }
+
   console.log(`[poll] Warm-up done — ${seenMessageIds.size} existing messages marked seen (grace window: ${graceCutoff})`);
 }
 
