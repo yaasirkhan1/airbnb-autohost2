@@ -1416,13 +1416,27 @@ app.get('/api/properties/all', async (req, res) => {
     res.json({
       count: properties.length,
       properties: properties.map(p => ({
-        id:          p.id,
-        name:        p.name,            // internal Hospitable label (e.g. "18-A")
-        public_name: p.public_name,     // Airbnb listing title
-        description: (p.description || p.summary || '').slice(0, 200),
-        platform:    p.platform || p.channel || null,
-        bedrooms:    p.bedrooms || null,
-        city:        p.city || p.address?.city || null,
+        id:            p.id,
+        name:          p.name,
+        public_name:   p.public_name,
+        description:   (p.description || p.summary || '').slice(0, 200),
+        platform:      p.platform || p.channel || null,
+        bedrooms:      p.bedrooms || null,
+        city:          p.city || p.address?.city || null,
+        // Numeric/legacy IDs — useful for mapping to v1 or platform IDs
+        hospitable_id: p.hospitable_id || p.legacy_id || p.numeric_id || null,
+        platform_id:   p.platform_id   || p.airbnb_id || p.external_id || null,
+        listings:      p.listings      || null,
+        // Dump any unknown top-level keys so we can discover new fields
+        _extra: Object.fromEntries(
+          Object.entries(p).filter(([k]) => ![
+            'id','name','public_name','description','summary','platform',
+            'bedrooms','city','the_space','guest_access','neighborhood_description',
+            'getting_around','other_notes','house_rules','amenities',
+            'space_overview','neighborhood_overview','access','transit',
+            'other_details','notes','check_in_time','check_out_time',
+          ].includes(k))
+        ),
       })),
     });
   } catch (e) {
