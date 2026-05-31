@@ -1611,6 +1611,109 @@ app.post('/webhook/test', async (req, res) => {
   }
 });
 
+// ─── Amenity push ────────────────────────────────────────────────────────────
+
+// Key mapping: unit-profiles names → Hospitable API amenity keys
+const AMENITY_KEY_MAP = {
+  air_conditioning:         'ac',
+  dedicated_workspace:      'laptop_friendly_workspace',
+  clothing_storage:         'wardrobe_or_closet',
+  washer_in_building:       'washer',
+  dryer_in_building:        'dryer',
+  paid_parking_off_premises:'paid_parking',
+  free_street_parking:      'street_parking',
+  trash_compactor:          'trash_compacter',
+  step_free_access:         'home_step_free_access',
+  smart_tv:                 'tv',
+  // remove-list mappings
+  hot_tub:                  'jacuzzi',
+  free_parking_on_premises: 'free_on_premise_parking',
+  golf_course:              'golf_course_access',
+  disabled_parking:         'disabled_parking_spot',
+  luggage_dropoff:          'luggage_dropoff_allowed',
+};
+function mapAmenityKey(k) { return AMENITY_KEY_MAP[k] || k; }
+
+// POST /api/push-amenities
+// Body: { units?: string[] }  — omit to run all units in unit-profiles.json
+// Reads unit-profiles.json, fetches current amenities, applies keep/remove,
+// and calls PUT /v2/properties/{uuid} for each unit.
+// Returns per-unit before/after and Hospitable response status.
+app.post('/api/push-amenities', async (req, res) => {
+  const PROFILES_PATH = path.join(
+    process.env.DATA_DIR || path.join(__dirname, '../data'),
+    'unit-profiles.json'
+  );
+
+  let profiles;
+  try {
+    profiles = JSON.parse(fs.readFileSync(PROFILES_PATH, 'utf8'));
+  } catch (e) {
+    return res.status(500).json({ error: `Could not load unit-profiles.json: ${e.message}` });
+  }
+
+  const requestedUnits = Array.isArray(req.body.units) && req.body.units.length
+    ? req.body.units
+    : Object.keys(profiles);
+
+  const results = [];
+
+  for (const unit of requestedUnits) {
+    const prof = profiles[unit];
+    if (!prof) { results.push({ unit, status: 'skipped', reason: 'not in unit-profiles.json' }); continue; }
+
+    const uuid     = prof.hospitable_uuid;
+    const keepH    = [...new Set(prof.amenities.keep.map(mapAmenityKey))];
+    const removeH  = new Set(prof.amenities.remove.map(mapAmenityKey));
+
+    // Fetch current amenities
+    let current;
+    try {
+      const data = await hospGet(`/properties/${uuid}?include=amenities`);
+      const p    = data.data || data;
+      current    = Array.isArray(p.amenities) ? p.amenities
+                 : typeof p.amenities === 'string' ? JSON.parse(p.amenities)
+                 : [];
+    } catch (e) {
+      results.push({ unit, uuid, status: 'error', reason: `fetch failed: ${e.message}` });
+      continue;
+    }
+
+    const curSet    = new Set(current);
+    const target    = [...new Set([...current.filter(k => !removeH.has(k)), ...keepH])].sort();
+    const removed   = current.filter(k => removeH.has(k));
+    const added     = keepH.filter(k => !curSet.has(k));
+
+    // Push to Hospitable
+    let hospStatus = 'ok';
+    let hospError  = null;
+    try {
+      await hospPut(`/properties/${uuid}`, { amenities: target });
+      console.log(`[amenities] ✓ ${unit} (${uuid.slice(0,8)}…) -${removed.length} +${added.length}`);
+    } catch (e) {
+      hospStatus = 'error';
+      hospError  = e.message.slice(0, 120);
+      console.error(`[amenities] ✗ ${unit}: ${hospError}`);
+    }
+
+    results.push({
+      unit,
+      uuid,
+      hospitable_internal: prof.hospitable_internal,
+      status:   hospStatus,
+      error:    hospError,
+      removed,
+      added,
+      before:   current.length,
+      after:    target.length,
+    });
+
+    await new Promise(r => setTimeout(r, 300)); // rate-limit buffer
+  }
+
+  res.json({ ok: true, results });
+});
+
 // ─── Property browser + listing populate ─────────────────────────────────────
 
 // GET /api/properties/all
