@@ -714,32 +714,56 @@ If you have any questions before arrival, we're always happy to help point you t
 Warm regards,
 Cal`;
 
-function detectHardcodedResponse(messageBody) {
+function detectHardcodedResponse(guestName, messageBody) {
   const b = messageBody.toLowerCase();
+  const name = (guestName || 'there').split(' ')[0]; // first name only
 
+  // Age requirement
+  if (
+    /\bage\b|how old|minimum age|age requirement|\byoung\b|years old/.test(b) ||
+    (/\b2[1-5]\b/.test(b) && /\byear|\bold\b/.test(b))
+  ) {
+    return {
+      confident: true,
+      reply: `Hi ${name}, thank you for your interest in booking our property! Our minimum age requirement is 26, but we do occasionally make exceptions for the right guest.\n\nTo be considered as an exception, please provide us with the following details:\n- Who you'll be traveling with\n- The purpose of your trip\n- How many guests will be staying at the property\n\nOnce we have this information, we'll be happy to review your request and let you know if we can accommodate your booking. Looking forward to hearing from you!\n\nBest,\nCal`,
+    };
+  }
+
+  // Early check-in
   if (/early.{0,15}check[\s-]?in|check[\s-]?in.{0,15}early|arriv.{0,15}early|early.{0,15}arriv/.test(b)) {
     return {
-      reply: "Early check-in is available from 1:30 PM for a $45 fee — just let us know if you'd like to add it and we'll get that set up for you! 😊",
       confident: true,
+      reply: `Thank you for reaching out! We'd be happy to accommodate an early check-in, depending on availability. The earliest we can offer is 1:00 PM, and there is a $45 early check-in fee to cover the additional preparation time.\n\nIf you'd like to proceed, just let us know and we'll confirm availability and send over the payment request. Looking forward to hosting you!\n\nBest,\nCal`,
     };
   }
 
+  // Late checkout
   if (/late.{0,15}check[\s-]?out|check[\s-]?out.{0,15}late|stay.{0,10}later?\b|late.{0,10}depart|extend.{0,15}check/.test(b)) {
     return {
-      reply: "Late checkout is available until 1:30 PM for a $45 fee — let us know if you'd like to add it and we'll confirm availability! 😊",
       confident: true,
+      reply: `Thanks for reaching out! We do offer late check-out based on availability, and the latest we can accommodate is 1:30 PM for a $45 fee.\n\nIf you'd like to proceed, just let us know and we'll confirm availability and send over the payment request. Looking forward to your stay!\n\nBest,\nCal`,
     };
   }
 
+  // Towels / linens
   if (/\btowel|\blinen|\bbed.?sheet/.test(b)) {
     return {
-      reply: "Fresh towels are in the closet and dressers! If you need extras, we can have our cleaning team bring some over — just say the word 😊",
       confident: true,
+      reply: "Fresh towels are in the closet and dressers! If you need extras, we can have our cleaning team bring some over — just say the word 😊",
     };
   }
 
+  // Heating & cooling / thermostat
+  if (/\bheat(ing)?\b|\bcooling\b|\ba[\s\/]?c\b|air.?condition|thermostat|\btemperature\b|\bcold\b|\bwarm\b|too hot|too cold|adjust.{0,15}temp|\bradiat(or|ion)\b/.test(b)) {
+    return {
+      confident: true,
+      reply: `To adjust the heating and cooling, follow these steps:\n\nSeasonal adjustment: As mentioned in the listing, the heating/cooling functions change with the seasons. In spring and summer you can adjust the A/C, while in late fall and winter you can adjust the heating controls.\n\nAccessing controls: Locate the radiation unit underneath the window in each room.\n\nPanel access: On top of the radiation unit, find the square panel.\n\nActivating controls: Press the back two corners of the square panel to display the fan adjustment controls.\n\nBy following these steps, you can access and adjust the heating and cooling according to your needs. Feel free to reach out if you need any further assistance!\n\nBest,\nCal`,
+    };
+  }
+
+  // Parking
   if (/\bpark(ing)?\b/.test(b)) {
-    return { reply: PARKING_REPLY, confident: true };
+    return { confident: true, reply: PARKING_REPLY };
   }
 
   return null;
@@ -762,7 +786,7 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
 
 async function draftReply(guestName, messageBody, propertyName, propertyId) {
   // Short-circuit for common questions with exact hardcoded answers
-  const hardcoded = detectHardcodedResponse(messageBody);
+  const hardcoded = detectHardcodedResponse(guestName, messageBody);
   if (hardcoded) {
     console.log(`[draft] Hardcoded match for: "${messageBody.slice(0, 60)}"`);
     return hardcoded;
@@ -787,11 +811,13 @@ Confidence rules:
 - NEVER invent facts. If unsure, set "confident": false and set "reply" to "".
 
 Common questions you CAN always answer confidently (set "confident": true):
-- Towel or linen requests: Fresh towels are in the closet and dressers. If they need extras, the cleaning team can bring some over.
-- Early check-in requests: Early check-in is available from 1:30 PM for a $45 fee.
-- Late checkout requests: Late checkout is available until 1:30 PM for a $45 fee.
-- WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If no WiFi info is listed, set "confident": false.
-- Parking questions: Send the full Peachtree Towers parking guide (AAA Garage on Baker St is closest, several other garages within 5 min walk, recommend ParkMobile app).
+- Age requirement: Minimum age is 26; exceptions considered with travel details.
+- Towel or linen requests: Fresh towels are in the closet and dressers; cleaning team can bring extras.
+- Early check-in requests: Available from 1:00 PM for a $45 fee; confirm availability and send payment request.
+- Late checkout requests: Available until 1:30 PM for a $45 fee; confirm availability and send payment request.
+- Heating/cooling/thermostat: Radiation unit under each window; press back two corners of the square panel on top.
+- WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If not listed, set "confident": false.
+- Parking questions: Send the full Peachtree Towers parking guide (AAA Garage on Baker St is closest).
 
 Reply style rules:
 - Open with a brief warm greeting (e.g. "Hi [Name]!"), then immediately answer the question.
@@ -849,6 +875,54 @@ ${JSON_INSTRUCTIONS}`;
   }
 }
 
+// ─── Cancellation follow-up ───────────────────────────────────────────────────
+
+const CANCELLATION_FOLLOWUP = `I noticed that your reservation was recently canceled, and I just wanted to personally check in. We completely understand that plans change, but if you don't mind sharing, I'd really appreciate knowing what led to the cancellation.
+
+Your feedback genuinely helps us improve the guest experience, and if there was anything specific that didn't work for you — timing, pricing, amenities, questions about the space, or anything else — please feel free to let me know.
+
+If your plans are still flexible and there's anything we can do to help or make your stay a better fit, I'd be happy to see what options are available.
+
+Either way, thank you for considering us, and we hope your travels go smoothly.
+
+Warmly,
+Cal`;
+
+async function handleReservationChanged(data) {
+  if (!data) return;
+  const status = (data.status || '').toLowerCase();
+  if (status !== 'cancelled' && status !== 'canceled') {
+    console.log(`[webhook/reservation] status="${status}" — not a cancellation, ignoring`);
+    return;
+  }
+
+  const reservationId = data.id || data.reservation_id;
+  if (!reservationId) {
+    console.warn('[webhook/cancel] Cancellation event has no reservation ID — ignoring');
+    return;
+  }
+
+  // Guest name may or may not be in the webhook payload; fetch if missing
+  let guestName = data.guest?.full_name || data.guest?.first_name || null;
+  if (!guestName) {
+    try {
+      const res = await hospGet(`/reservations/${reservationId}?include=guest`);
+      const r = res.data || res;
+      guestName = r.guest?.full_name || r.guest?.first_name || 'Guest';
+    } catch (e) {
+      guestName = 'Guest';
+    }
+  }
+
+  console.log(`[webhook/cancel] Cancellation — reservation=${reservationId} guest="${guestName}" — sending follow-up`);
+  try {
+    await sendToHospitable(reservationId, CANCELLATION_FOLLOWUP, 'reservation');
+    console.log(`[webhook/cancel] ✓ Follow-up sent to ${guestName} (${reservationId})`);
+  } catch (e) {
+    console.error(`[webhook/cancel] ✗ Failed for ${reservationId}: ${e.message}`);
+  }
+}
+
 // ─── Webhook ──────────────────────────────────────────────────────────────────
 
 app.post('/webhook/hospitable', (req, res, next) => {
@@ -882,6 +956,11 @@ app.post('/webhook/hospitable', (req, res, next) => {
 
   if (!event?.action) {
     console.log('[webhook] No action field — ignoring');
+    return;
+  }
+
+  if (event.action === 'reservation.changed') {
+    await handleReservationChanged(event.data);
     return;
   }
 
