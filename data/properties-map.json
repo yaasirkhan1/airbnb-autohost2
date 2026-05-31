@@ -2,10 +2,12 @@
   "2077758": {
     "label": "Kal-18A",
     "hospitable_id": "2077758",
-    "uuid": null,
+    "uuid": "6f06bfbb-423e-4640-a354-5f738984eea9",
     "airbnb_name": "Walk to FIFA World Cup | Downtown ATL Retreat",
     "owner": "Kal Suarez",
-    "notes": "Numeric Hospitable ID. UUID will be auto-resolved on first listing-populate call.",
-    "updatedAt": "2026-05-31T00:00:00.000Z"
+    "address": "300 Peachtree Road NE, Atlanta, GA",
+    "bedrooms": 1,
+    "notes": "Resolved UUID from address scan: only Atlanta 1BR unnamed property",
+    "updatedAt": "2026-05-31T08:44:11.270Z"
   }
 }
