@@ -1,6 +1,135 @@
 # Airbnb Listing Brief — Master Template
 # Peachtree Tower Rentals | 300 Peachtree Road NE, Atlanta, GA
 
+---
+# MASTER LISTING UPDATE PROCESS
+# Read this entire file before touching anything in the Airbnb editor.
+
+## WHO YOU ARE
+You are updating Airbnb listings for Peachtree Tower Rentals — 7 units at 300 Peachtree Road NE, Downtown Atlanta. Your job is to make each listing complete, accurate, and compelling for FIFA World Cup 2026 guests.
+
+## BEFORE YOU START
+1. Read the entire unit brief below before clicking anything
+2. Open the listing editor and scan all sections first so you know what needs filling
+3. Never guess — only use facts from this brief. If something isn't in the brief, leave it blank or ask.
+
+## SECTION-BY-SECTION RULES
+
+### LISTING TITLE
+- Max 50 characters
+- Lead with FIFA World Cup 2026 angle
+- Include floor or unit size if it fits
+
+### LISTING DESCRIPTION (500 char max)
+- Hook in first sentence — sell the experience not the features
+- Must mention: FIFA World Cup 2026, Downtown Atlanta, walking distance to venues
+- End with MARTA reference
+
+### THE SPACE
+- Describe every room in order: living room → kitchen → bedroom(s) → bathroom → patio/balcony
+- Sell benefits not just features ("plenty of natural light and seating for your group" not "has windows and chairs")
+- Include sqft for 21-I only (1,150 sqft)
+
+### GUEST ACCESS
+- Always: full private access to entire unit
+- Mention: private entrance, self check-in keypad, elevator, door code sent 24hrs before
+
+### INTERACTION WITH GUESTS
+- Light touch hosting style
+- Responsive via Airbnb messaging
+- Phone line for urgent matters
+- Early check-in $45, late checkout $45
+
+### NEIGHBORHOOD
+- Lead with FIFA World Cup 2026 walking distances
+- List: Mercedes-Benz Stadium, State Farm Arena, Centennial Olympic Park, Georgia Aquarium
+- Include dining: Panera (1 min), Starbucks (1-2 min), Peachtree Center Food Court (2 min)
+- Honest note about urban neighborhood
+
+### GETTING AROUND
+- MARTA Peachtree Center Station: 3-minute walk
+- Direct to airport (25 min), Midtown (5 min), GWCC/State Farm Arena for match days
+- Parking NOT included — paid garages 1-5 min walk
+- Free street parking available but guests responsible for all signage/restrictions/fees
+
+### DIRECTIONS
+- ONLY put: "Self check-in. Door code sent via Airbnb 24 hours before arrival. Take elevator to [floor]th floor."
+- Do NOT put Getting Around info here
+- Do NOT put neighborhood info here
+
+### OTHER DETAILS TO NOTE
+- Check-in/out times and fees
+- HVAC description (exact text): "The building utilizes a centralized HVAC system that operates in seasonal heating or cooling modes. During spring and fall transitions, temperature settings may be limited by the building's current operating mode."
+- Laundry: building basement
+- Parking disclaimer
+- Min age 26
+- Key fob: $150 replacement fee
+
+### HOUSE RULES
+- No smoking
+- No pets
+- No parties or events
+- Quiet hours 10PM
+- Min age 26
+- Check-in 4PM / Check-out 11AM
+- Early check-in 1PM: $45
+- Late checkout 1:30PM: $45
+- Max guests (see unit brief)
+
+### CANCELLATION POLICY
+- Always set to: Moderate
+
+### AMENITIES
+- Only enable amenities listed in the unit brief under AMENITIES TO ENABLE
+- Uncheck everything listed under DO NOT ENABLE
+- Never enable an amenity that isn't confirmed in the brief
+
+### PHOTO CAPTIONS
+- Look at each photo and identify what is actually in it before writing anything
+- SELL the feature — highlight the benefit to the guest
+- Never describe literally ("gray sofa") — describe the experience ("comfortable seating for your whole group")
+- See PHOTO CAPTION STYLE GUIDE in this file for templates by room type
+- Keep under 100 characters
+- Work through all photos sequentially, save after each one
+
+### CHECKOUT INSTRUCTIONS
+- Always end with: "Return all keys and key fobs to the kitchen counter. Unreturned key fobs incur a $150 replacement fee."
+
+### ARRIVAL GUIDE / HOUSE MANUAL
+- Include: check-in instructions, parking note, WiFi note, venue directions, HVAC instructions, laundry, early/late checkout info, checkout instructions
+- Tone: warm and welcoming, not corporate
+- Sign off: "Enjoy your FIFA World Cup 2026 experience in Atlanta! 🏆"
+
+### LOCATION SECTION (left sidebar)
+- Address: already filled, do not change
+- Neighborhood description: fill using neighborhood content from brief
+- Getting around: fill using getting around content from brief
+- These fields are often missed — always check them
+
+## QUALITY CHECK BEFORE FINISHING
+Before telling the user you are done, verify:
+- [ ] Title filled
+- [ ] Listing description filled (check char count is under 500)
+- [ ] The Space filled
+- [ ] Guest Access filled
+- [ ] Interaction with Guests filled
+- [ ] Neighborhood filled
+- [ ] Getting Around filled
+- [ ] Directions filled (short, no neighborhood info)
+- [ ] Other Details filled (HVAC text correct)
+- [ ] House Rules set
+- [ ] Cancellation policy set to Moderate
+- [ ] Amenities checked/unchecked per brief
+- [ ] All photo captions updated (benefit-focused, not literal)
+- [ ] Checkout instructions include key fob fee
+- [ ] Arrival guide filled
+- [ ] Location sidebar: Neighborhood description filled
+- [ ] Location sidebar: Getting around filled
+
+If any item is not complete, go back and complete it before finishing.
+
+---
+
 This file is the master prompt template for filling out any Airbnb listing in this portfolio.
 Paste the relevant per-unit brief (`.claude/listing-briefs/[unit].md`) at the start of your Chrome session before touching any field.
 
