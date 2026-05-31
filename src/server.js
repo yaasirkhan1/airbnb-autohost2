@@ -28,6 +28,9 @@ const seenMessageIds = new Set(); // dedup between webhook + polling
 let knownPropertyIds  = [];       // populated after initAllPropertyProfiles
 let pollingSince      = null;     // ISO timestamp — only reply to messages after this
 
+// Quick-reply cache — populated at startup from Hospitable /v2/quick-replies
+let parkingQuickReply = null;
+
 const HOST_SETTINGS = {
   name: process.env.HOST_NAME || 'Your Host',
   tone: process.env.HOST_TONE || 'warm and friendly',
@@ -262,6 +265,9 @@ async function initAllPropertyProfiles() {
   pollingSince = toHospitableDate(new Date());
   setInterval(pollForNewMessages, 60 * 1000);
   console.log(`[poll] Polling started — checking every 60s (since ${pollingSince})`);
+
+  // Cache Hospitable quick replies (parking guide etc.)
+  fetchParkingQuickReply().catch(e => console.error('[quick-reply] Init failed:', e.message));
 
   // Start hourly demand-based pricing engine (10s after warm-up to avoid startup noise)
   loadPricingState();
@@ -654,6 +660,68 @@ async function notifyHost({ guestName, messageBody, propertyName }) {
   }
 }
 
+// ─── Quick-reply cache ────────────────────────────────────────────────────────
+
+async function fetchParkingQuickReply() {
+  try {
+    const data = await hospGet('/quick-replies?per_page=50');
+    const items = Array.isArray(data) ? data
+      : Array.isArray(data?.data) ? data.data
+      : Array.isArray(data?.quick_replies) ? data.quick_replies
+      : [];
+    const match = items.find(r =>
+      (r.title || r.name || r.label || '').toLowerCase().includes('parking')
+    );
+    if (match) {
+      parkingQuickReply = match.body || match.content || match.message || null;
+      if (parkingQuickReply)
+        console.log('[quick-reply] Cached parking quick reply:', parkingQuickReply.slice(0, 80));
+      else
+        console.log('[quick-reply] Found parking quick reply but no body field — will use fallback');
+    } else {
+      console.log('[quick-reply] No "parking" quick reply found — will use fallback text');
+    }
+  } catch (e) {
+    console.log(`[quick-reply] Could not fetch /v2/quick-replies (${e.message.slice(0, 60)}) — will use fallback text`);
+  }
+}
+
+// ─── Hardcoded responses — bypass Claude for common predictable questions ─────
+
+function detectHardcodedResponse(messageBody) {
+  const b = messageBody.toLowerCase();
+
+  if (/early.{0,15}check[\s-]?in|check[\s-]?in.{0,15}early|arriv.{0,15}early|early.{0,15}arriv/.test(b)) {
+    return {
+      reply: "Early check-in is available from 1:30 PM for a $45 fee — just let us know if you'd like to add it and we'll get that set up for you! 😊",
+      confident: true,
+    };
+  }
+
+  if (/late.{0,15}check[\s-]?out|check[\s-]?out.{0,15}late|stay.{0,10}later?\b|late.{0,10}depart|extend.{0,15}check/.test(b)) {
+    return {
+      reply: "Late checkout is available until 1:30 PM for a $45 fee — let us know if you'd like to add it and we'll confirm availability! 😊",
+      confident: true,
+    };
+  }
+
+  if (/\btowel|\blinen|\bbed.?sheet/.test(b)) {
+    return {
+      reply: "Fresh towels are in the closet and dressers! If you need extras, we can have our cleaning team bring some over — just say the word 😊",
+      confident: true,
+    };
+  }
+
+  if (/\bpark(ing)?\b/.test(b)) {
+    return {
+      reply: parkingQuickReply || "I'll send you our full parking guide shortly with all the best options near the building!",
+      confident: true,
+    };
+  }
+
+  return null;
+}
+
 // ─── Reply drafting ───────────────────────────────────────────────────────────
 
 function findSimilarExamples(propertyId, guestMessage, count = 3) {
@@ -670,6 +738,13 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
 }
 
 async function draftReply(guestName, messageBody, propertyName, propertyId) {
+  // Short-circuit for common questions with exact hardcoded answers
+  const hardcoded = detectHardcodedResponse(messageBody);
+  if (hardcoded) {
+    console.log(`[draft] Hardcoded match for: "${messageBody.slice(0, 60)}"`);
+    return hardcoded;
+  }
+
   const profileData = propertyProfiles.get(propertyId);
   const examples = propertyId ? findSimilarExamples(propertyId, messageBody) : [];
   const vaultEntry = propertyId ? vault.getVaultEntry(propertyId)?.master : null;
@@ -689,10 +764,11 @@ Confidence rules:
 - NEVER invent facts. If unsure, set "confident": false and set "reply" to "".
 
 Common questions you CAN always answer confidently (set "confident": true):
-- Towel or linen requests: Tell them fresh towels are in the closet (or under the bathroom sink) and housekeeping can bring more if needed.
-- Early check-in or late checkout requests: Tell them you'll check on availability and get back to them shortly.
+- Towel or linen requests: Fresh towels are in the closet and dressers. If they need extras, the cleaning team can bring some over.
+- Early check-in requests: Early check-in is available from 1:30 PM for a $45 fee.
+- Late checkout requests: Late checkout is available until 1:30 PM for a $45 fee.
 - WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If no WiFi info is listed, set "confident": false.
-- Parking questions: Use the parking info from the PROPERTY DETAILS section above. If no parking info is listed, set "confident": false.
+- Parking questions: Tell them you'll send the full parking guide shortly.
 
 Reply style rules:
 - Open with a brief warm greeting (e.g. "Hi [Name]!"), then immediately answer the question.
