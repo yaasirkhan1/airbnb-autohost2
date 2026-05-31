@@ -28,9 +28,6 @@ const seenMessageIds = new Set(); // dedup between webhook + polling
 let knownPropertyIds  = [];       // populated after initAllPropertyProfiles
 let pollingSince      = null;     // ISO timestamp — only reply to messages after this
 
-// Quick-reply cache — populated at startup from Hospitable /v2/quick-replies
-let parkingQuickReply = null;
-
 const HOST_SETTINGS = {
   name: process.env.HOST_NAME || 'Your Host',
   tone: process.env.HOST_TONE || 'warm and friendly',
@@ -265,9 +262,6 @@ async function initAllPropertyProfiles() {
   pollingSince = toHospitableDate(new Date());
   setInterval(pollForNewMessages, 60 * 1000);
   console.log(`[poll] Polling started — checking every 60s (since ${pollingSince})`);
-
-  // Cache Hospitable quick replies (parking guide etc.)
-  fetchParkingQuickReply().catch(e => console.error('[quick-reply] Init failed:', e.message));
 
   // Start hourly demand-based pricing engine (10s after warm-up to avoid startup noise)
   loadPricingState();
@@ -660,33 +654,65 @@ async function notifyHost({ guestName, messageBody, propertyName }) {
   }
 }
 
-// ─── Quick-reply cache ────────────────────────────────────────────────────────
-
-async function fetchParkingQuickReply() {
-  try {
-    const data = await hospGet('/quick-replies?per_page=50');
-    const items = Array.isArray(data) ? data
-      : Array.isArray(data?.data) ? data.data
-      : Array.isArray(data?.quick_replies) ? data.quick_replies
-      : [];
-    const match = items.find(r =>
-      (r.title || r.name || r.label || '').toLowerCase().includes('parking')
-    );
-    if (match) {
-      parkingQuickReply = match.body || match.content || match.message || null;
-      if (parkingQuickReply)
-        console.log('[quick-reply] Cached parking quick reply:', parkingQuickReply.slice(0, 80));
-      else
-        console.log('[quick-reply] Found parking quick reply but no body field — will use fallback');
-    } else {
-      console.log('[quick-reply] No "parking" quick reply found — will use fallback text');
-    }
-  } catch (e) {
-    console.log(`[quick-reply] Could not fetch /v2/quick-replies (${e.message.slice(0, 60)}) — will use fallback text`);
-  }
-}
-
 // ─── Hardcoded responses — bypass Claude for common predictable questions ─────
+
+const PARKING_REPLY = `Parking Information – Peachtree Towers
+
+We understand that parking is an important part of planning your trip, and there are several convenient, secure, and affordable parking options located just steps from the building. Most guests find parking quick and easy once they arrive.
+
+Closest & Most Convenient Option
+
+AAA Parking Garage – 17 Baker St NE, Atlanta, GA 30308
+- Approximately 1–2 minute walk from the building
+- Covered garage, safe and secure
+- Generally the most convenient option for guests
+- Rates vary based on demand and city events
+- Typically has reliable availability except during major downtown events
+
+Additional Nearby Parking Options
+
+Peachtree Center Garage – 161 Peachtree Center Ave
+- Approximately 5-minute walk
+- Covered and secure
+- Typical rates range from $10–$15 per day (may vary)
+
+LAZ Parking – Courtland Street Lots
+- Approximately 4–6 minute walk
+- Often offers additional availability during busy periods
+- Typical rates range from $8–$15 per day (may vary)
+
+Emory / Children's Healthcare Garage
+- Approximately 2–3 minute walk
+- Clean, well-maintained facility
+- Typical rates range from $12–$15 per day (may vary)
+
+Street Parking
+
+Street parking may be available on Peachtree Street, Baker Street, and surrounding blocks.
+- Typically $2–$4 per hour
+- Limited availability, especially during business hours and events
+- Please review posted signage carefully, as some areas have restricted or tow-away zones
+
+Helpful Tip: ParkMobile App
+
+We highly recommend downloading the ParkMobile app before arrival. It allows you to view nearby options, compare real-time pricing, check availability, and extend parking remotely from your phone.
+
+Event & Convention Notice
+
+Downtown Atlanta hosts many major events throughout the year. Parking rates may increase during high-demand periods, including events at Georgia World Congress Center, Mercedes-Benz Stadium, State Farm Arena, Dragon Con, and major conventions, concerts, and sporting events. Arriving earlier in the day can help secure the best rates and availability.
+
+Quick Summary
+
+✓ Several secure parking garages are located within a 1–5 minute walk of the building
+✓ The AAA Garage is typically the closest and most convenient option
+✓ Street parking is available but limited
+✓ ParkMobile is the easiest way to find and manage parking during your stay
+✓ Parking is not included with the reservation, but multiple options are available nearby to fit different budgets
+
+If you have any questions before arrival, we're always happy to help point you toward the best option for your stay.
+
+Warm regards,
+Cal`;
 
 function detectHardcodedResponse(messageBody) {
   const b = messageBody.toLowerCase();
@@ -713,10 +739,7 @@ function detectHardcodedResponse(messageBody) {
   }
 
   if (/\bpark(ing)?\b/.test(b)) {
-    return {
-      reply: parkingQuickReply || "I'll send you our full parking guide shortly with all the best options near the building!",
-      confident: true,
-    };
+    return { reply: PARKING_REPLY, confident: true };
   }
 
   return null;
@@ -768,7 +791,7 @@ Common questions you CAN always answer confidently (set "confident": true):
 - Early check-in requests: Early check-in is available from 1:30 PM for a $45 fee.
 - Late checkout requests: Late checkout is available until 1:30 PM for a $45 fee.
 - WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If no WiFi info is listed, set "confident": false.
-- Parking questions: Tell them you'll send the full parking guide shortly.
+- Parking questions: Send the full Peachtree Towers parking guide (AAA Garage on Baker St is closest, several other garages within 5 min walk, recommend ParkMobile app).
 
 Reply style rules:
 - Open with a brief warm greeting (e.g. "Hi [Name]!"), then immediately answer the question.
