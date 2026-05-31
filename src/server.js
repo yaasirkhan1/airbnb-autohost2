@@ -1444,6 +1444,18 @@ app.get('/api/properties/all', async (req, res) => {
   }
 });
 
+// GET /api/properties/:id/raw — proxy a single Hospitable property with optional includes
+// ?include=amenities,house_rules,listings (comma-separated)
+app.get('/api/properties/:id/raw', async (req, res) => {
+  try {
+    const includes = req.query.include ? `?include=${req.query.include}` : '';
+    const data = await hospGet(`/properties/${req.params.id}${includes}`);
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/properties-map — view all stored property mappings
 app.get('/api/properties-map', (req, res) => {
   res.json(loadPropertiesMap());
