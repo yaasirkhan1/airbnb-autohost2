@@ -1,5 +1,6 @@
 node_modules/
 data/
 !data/properties-map.json
+!data/unit-profiles.json
 .env
 *.log

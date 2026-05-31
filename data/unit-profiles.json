@@ -1,0 +1,137 @@
+{
+  "18-A": {
+    "hospitable_uuid": "5a8cafc2-baa9-4fdb-b6dc-773bfcfb75bc",
+    "direct_booking_url": "https://peachtreerentals.hospitable.rentals/property/downtown-1br-high-rise-city-views-walk-to-park",
+    "floor": 18,
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "bed_type": "Queen",
+    "bathroom_type": "Standing shower and bathtub combo with rainfall showerhead",
+    "outdoor": "Private patio with city views",
+    "workspace": false,
+    "trash_compactor": true,
+    "ethernet": true,
+    "ceiling_fan": false,
+    "amenities": {
+      "keep": ["air_conditioning", "heating", "wifi", "tv", "smart_tv", "kitchen", "refrigerator", "freezer", "stove", "oven", "microwave", "dishwasher", "coffee_maker", "toaster", "baking_sheet", "cooking_basics", "dishes_and_silverware", "wine_glasses", "dining_table", "trash_compactor", "hair_dryer", "iron", "bed_linens", "extra_pillows_and_blankets", "hangers", "clothing_storage", "washer_in_building", "dryer_in_building", "elevator", "security_guard", "private_entrance", "paid_parking_on_premises", "paid_parking_off_premises", "free_street_parking", "ethernet_connection", "patio", "outdoor_seating", "body_soap", "shampoo", "conditioner", "shower_gel", "hot_water", "essentials", "cleaning_products"],
+      "remove": ["hot_tub", "free_parking_on_premises", "fire_extinguisher", "bathtub", "hammock", "kayak", "alfresco_dining", "bar", "butler", "car_rental", "fresh_groceries", "golf_course", "jet_skis", "squash_court", "tennis_court", "disabled_parking", "blackout_curtains", "dedicated_workspace"]
+    },
+    "free_street_parking_note": "Available on surrounding blocks during select hours. Guests are responsible for locating availability and complying with all posted signage, restrictions, and tow-away zones. Any parking fees, tickets, or penalties are the sole responsibility of the guest."
+  },
+  "21-D": {
+    "hospitable_uuid": "80c21aac-00eb-49af-9094-6792839ff5a4",
+    "direct_booking_url": "https://peachtreerentals.hospitable.rentals/property/midtown-skyline-view-walk-2-atl-attractions",
+    "floor": 21,
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "bed_type": "King",
+    "bathroom_type": "Bathtub",
+    "outdoor": "Private patio with city views",
+    "workspace": true,
+    "trash_compactor": false,
+    "ethernet": false,
+    "ceiling_fan": false,
+    "amenities": {
+      "keep": ["air_conditioning", "heating", "wifi", "tv", "smart_tv", "kitchen", "refrigerator", "freezer", "stove", "oven", "microwave", "dishwasher", "coffee_maker", "toaster", "baking_sheet", "cooking_basics", "dishes_and_silverware", "wine_glasses", "dining_table", "hair_dryer", "iron", "bed_linens", "hangers", "clothing_storage", "washer_in_building", "dryer_in_building", "elevator", "security_guard", "private_entrance", "paid_parking_on_premises", "paid_parking_off_premises", "free_street_parking", "patio", "outdoor_seating", "dedicated_workspace", "body_soap", "shampoo", "conditioner", "shower_gel", "hot_water", "essentials", "cleaning_products", "step_free_access"],
+      "remove": ["hot_tub", "hammock", "kayak", "alfresco_dining", "bar", "butler", "car_rental", "fresh_groceries", "golf_course", "jet_skis", "squash_court", "tennis_court", "fire_extinguisher", "disabled_parking", "blackout_curtains", "free_parking_on_premises"]
+    },
+    "free_street_parking_note": "Available on surrounding blocks during select hours. Guests are responsible for locating availability and complying with all posted signage, restrictions, and tow-away zones. Any parking fees, tickets, or penalties are the sole responsibility of the guest."
+  },
+  "21-I": {
+    "hospitable_uuid": "1af8fdde-58ee-426e-8374-6530397347e8",
+    "direct_booking_url": "https://peachtreerentals.hospitable.rentals/property/1150-sqft-downtown-2br-walk-everywhere",
+    "floor": 21,
+    "bedrooms": 2,
+    "bathrooms": 1,
+    "bed_type": "Queen (bedroom 1) + Double (bedroom 2)",
+    "bathroom_type": "Full shower and bathtub combo",
+    "outdoor": "Private patio with city views",
+    "workspace": true,
+    "trash_compactor": false,
+    "ethernet": false,
+    "ceiling_fan": true,
+    "sqft": 1150,
+    "amenities": {
+      "keep": ["air_conditioning", "heating", "wifi", "tv", "smart_tv", "kitchen", "refrigerator", "freezer", "stove", "oven", "microwave", "dishwasher", "coffee_maker", "toaster", "baking_sheet", "cooking_basics", "dishes_and_silverware", "wine_glasses", "dining_table", "hair_dryer", "iron", "bed_linens", "clothing_storage", "hangers", "washer_in_building", "dryer_in_building", "elevator", "security_guard", "private_entrance", "paid_parking_on_premises", "paid_parking_off_premises", "free_street_parking", "patio", "outdoor_seating", "dedicated_workspace", "ceiling_fan", "body_soap", "shampoo", "conditioner", "shower_gel", "hot_water", "essentials", "cleaning_products"],
+      "remove": ["hot_tub", "hammock", "kayak", "alfresco_dining", "bar", "butler", "car_rental", "fresh_groceries", "golf_course", "jet_skis", "squash_court", "tennis_court", "fire_extinguisher", "disabled_parking", "blackout_curtains", "free_parking_on_premises"]
+    },
+    "free_street_parking_note": "Available on surrounding blocks during select hours. Guests are responsible for locating availability and complying with all posted signage, restrictions, and tow-away zones. Any parking fees, tickets, or penalties are the sole responsibility of the guest."
+  },
+  "23-N": {
+    "hospitable_uuid": "3e702102-a219-4c18-9f88-3a4d1ceb3825",
+    "direct_booking_url": "https://peachtreerentals.hospitable.rentals/property/hotel-district-1br-steps-to-arenas-gwcc",
+    "floor": 23,
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "bed_type": "King",
+    "bathroom_type": "Bathtub",
+    "outdoor": "Private patio with city views",
+    "workspace": true,
+    "trash_compactor": true,
+    "ethernet": true,
+    "ceiling_fan": false,
+    "amenities": {
+      "keep": ["air_conditioning", "heating", "wifi", "tv", "smart_tv", "kitchen", "refrigerator", "freezer", "stove", "oven", "microwave", "dishwasher", "coffee_maker", "toaster", "baking_sheet", "cooking_basics", "dishes_and_silverware", "wine_glasses", "dining_table", "trash_compactor", "hair_dryer", "iron", "bed_linens", "extra_pillows_and_blankets", "hangers", "clothing_storage", "washer_in_building", "dryer_in_building", "elevator", "security_guard", "private_entrance", "paid_parking_on_premises", "paid_parking_off_premises", "free_street_parking", "ethernet_connection", "patio", "outdoor_seating", "dedicated_workspace", "body_soap", "shampoo", "conditioner", "shower_gel", "hot_water", "essentials", "cleaning_products"],
+      "remove": ["hot_tub", "hammock", "kayak", "alfresco_dining", "bar", "butler", "car_rental", "fresh_groceries", "golf_course", "jet_skis", "squash_court", "tennis_court", "bidet", "fire_extinguisher", "disabled_parking", "free_parking_on_premises"]
+    },
+    "free_street_parking_note": "Available on surrounding blocks during select hours. Guests are responsible for locating availability and complying with all posted signage, restrictions, and tow-away zones. Any parking fees, tickets, or penalties are the sole responsibility of the guest."
+  },
+  "24-L": {
+    "hospitable_uuid": "bbe43523-c42a-46b0-8235-7ad08ae990c9",
+    "direct_booking_url": "https://peachtreerentals.hospitable.rentals/property/downtown-penthouse-skyline-views-comfort-dwtn",
+    "floor": 24,
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "bed_type": "Queen",
+    "bathroom_type": "Walk-in shower only",
+    "outdoor": "Private patio with city views",
+    "workspace": true,
+    "trash_compactor": true,
+    "ethernet": false,
+    "ceiling_fan": true,
+    "notes": "Top floor unit. 24/7 concierge confirmed by guest review.",
+    "amenities": {
+      "keep": ["air_conditioning", "heating", "wifi", "tv", "smart_tv", "kitchen", "refrigerator", "freezer", "stove", "oven", "microwave", "dishwasher", "coffee_maker", "toaster", "baking_sheet", "cooking_basics", "dishes_and_silverware", "wine_glasses", "dining_table", "trash_compactor", "hair_dryer", "iron", "bed_linens", "extra_pillows_and_blankets", "hangers", "clothing_storage", "washer_in_building", "dryer_in_building", "elevator", "security_guard", "private_entrance", "paid_parking_on_premises", "paid_parking_off_premises", "free_street_parking", "patio", "outdoor_seating", "dedicated_workspace", "ceiling_fan", "walk_in_shower", "body_soap", "shampoo", "conditioner", "shower_gel", "hot_water", "essentials", "cleaning_products"],
+      "remove": ["hot_tub", "hammock", "kayak", "alfresco_dining", "bar", "butler", "car_rental", "fresh_groceries", "golf_course", "jet_skis", "squash_court", "tennis_court", "wine_cellar", "fire_extinguisher", "disabled_parking", "free_parking_on_premises", "luggage_dropoff", "bathtub"]
+    },
+    "free_street_parking_note": "Available on surrounding blocks during select hours. Guests are responsible for locating availability and complying with all posted signage, restrictions, and tow-away zones. Any parking fees, tickets, or penalties are the sole responsibility of the guest."
+  },
+  "4-L": {
+    "hospitable_uuid": "80c21aac-00eb-49af-9094-6792839ff5a4",
+    "direct_booking_url": "https://peachtreerentals.hospitable.rentals/property/downtown-1br-condo-walk-to-stadium-aquarium",
+    "floor": 4,
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "bed_type": "King",
+    "bathroom_type": "Walk-in shower only",
+    "outdoor": "Private balcony with city views",
+    "workspace": true,
+    "trash_compactor": false,
+    "ethernet": false,
+    "ceiling_fan": true,
+    "amenities": {
+      "keep": ["air_conditioning", "heating", "wifi", "tv", "smart_tv", "kitchen", "refrigerator", "freezer", "stove", "oven", "microwave", "dishwasher", "coffee_maker", "toaster", "baking_sheet", "cooking_basics", "dishes_and_silverware", "wine_glasses", "dining_table", "hair_dryer", "iron", "bed_linens", "hangers", "clothing_storage", "washer_in_building", "dryer_in_building", "elevator", "security_guard", "private_entrance", "paid_parking_on_premises", "paid_parking_off_premises", "free_street_parking", "patio", "outdoor_seating", "dedicated_workspace", "ceiling_fan", "walk_in_shower", "body_soap", "shampoo", "conditioner", "shower_gel", "hot_water", "essentials", "cleaning_products"],
+      "remove": ["hot_tub", "hammock", "kayak", "alfresco_dining", "bar", "butler", "car_rental", "fresh_groceries", "golf_course", "jet_skis", "squash_court", "tennis_court", "fire_extinguisher", "disabled_parking", "free_parking_on_premises", "bathtub", "arcade_machine"]
+    },
+    "free_street_parking_note": "Available on surrounding blocks during select hours. Guests are responsible for locating availability and complying with all posted signage, restrictions, and tow-away zones. Any parking fees, tickets, or penalties are the sole responsibility of the guest."
+  },
+  "7-B": {
+    "hospitable_uuid": "283977a3-3af3-4d90-8d95-b418a3014d90",
+    "direct_booking_url": "https://peachtreerentals.hospitable.rentals/property/atl-downtown-condo-walk-everywhere-city-view",
+    "floor": 7,
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "bed_type": "King",
+    "bathroom_type": "Walk-in shower only",
+    "outdoor": "Private balcony with city views",
+    "workspace": true,
+    "trash_compactor": false,
+    "ethernet": true,
+    "ceiling_fan": false,
+    "amenities": {
+      "keep": ["air_conditioning", "heating", "wifi", "tv", "smart_tv", "kitchen", "refrigerator", "freezer", "stove", "oven", "microwave", "dishwasher", "coffee_maker", "toaster", "baking_sheet", "cooking_basics", "dishes_and_silverware", "wine_glasses", "dining_table", "trash_compactor", "hair_dryer", "iron", "bed_linens", "extra_pillows_and_blankets", "hangers", "clothing_storage", "washer_in_building", "dryer_in_building", "elevator", "security_guard", "private_entrance", "paid_parking_on_premises", "paid_parking_off_premises", "free_street_parking", "ethernet_connection", "patio", "outdoor_seating", "dedicated_workspace", "walk_in_shower", "body_soap", "shampoo", "conditioner", "shower_gel", "hot_water", "essentials", "cleaning_products"],
+      "remove": ["hot_tub", "hammock", "kayak", "alfresco_dining", "bar", "butler", "car_rental", "fresh_groceries", "golf_course", "jet_skis", "squash_court", "tennis_court", "fire_extinguisher", "disabled_parking", "free_parking_on_premises", "bathtub"]
+    },
+    "free_street_parking_note": "Available on surrounding blocks during select hours. Guests are responsible for locating availability and complying with all posted signage, restrictions, and tow-away zones. Any parking fees, tickets, or penalties are the sole responsibility of the guest."
+  }
+}
