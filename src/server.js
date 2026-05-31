@@ -872,8 +872,13 @@ Peachtree Tower Rentals`;
   }
 
   const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: gmailUser, pass: gmailPass },
+    host:             'smtp.gmail.com',
+    port:             465,
+    secure:           true,           // SSL — avoids STARTTLS handshake issues on Railway
+    auth:             { user: gmailUser, pass: gmailPass },
+    connectionTimeout: 10000,
+    greetingTimeout:   10000,
+    socketTimeout:     15000,
   });
 
   await transporter.sendMail({
@@ -1539,17 +1544,46 @@ app.get('/test', (req, res) => {
 app.post('/api/test-concierge-email', async (req, res) => {
   const {
     guestName    = 'Test Guest',
-    propertyId   = '80c21aac-00eb-49af-9094-6792839ff5a4', // defaults to unit 4-L
+    propertyId   = '80c21aac-00eb-49af-9094-6792839ff5a4',
     resourceId   = 'test-reservation-001',
     resourceType = 'reservation',
   } = req.body;
+
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailPass = process.env.GMAIL_APP_PASSWORD;
+
+  if (!gmailUser || !gmailPass) {
+    return res.status(500).json({ error: 'GMAIL_USER or GMAIL_APP_PASSWORD not set in environment' });
+  }
+
+  // Verify SMTP connection first — surfaces auth/network errors before sendMail
+  const transporter = nodemailer.createTransport({
+    host:             'smtp.gmail.com',
+    port:             465,
+    secure:           true,
+    auth:             { user: gmailUser, pass: gmailPass },
+    connectionTimeout: 10000,
+    greetingTimeout:   10000,
+    socketTimeout:     15000,
+  });
+
+  try {
+    await transporter.verify();
+  } catch (e) {
+    return res.status(500).json({
+      error:      'SMTP verify failed — check Gmail App Password and 2FA settings',
+      detail:     e.message,
+      gmailUser,
+    });
+  }
+
   try {
     await sendConciergeEmail({ guestName, propertyId, resourceId, resourceType });
     res.json({
-      ok:     true,
-      sentTo: '300ptconcierge@gmail.com',
-      unit:   loadPropertiesMap()[propertyId]?.label || propertyId,
-      gmailUser: process.env.GMAIL_USER || '(not set)',
+      ok:        true,
+      sentTo:    '300ptconcierge@gmail.com',
+      unit:      loadPropertiesMap()[propertyId]?.label || propertyId,
+      gmailUser,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
