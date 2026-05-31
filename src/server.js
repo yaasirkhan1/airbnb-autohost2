@@ -409,11 +409,12 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
 
       try {
         const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId);
-        if (!confident) {
-          console.log(`[poll/${tag}] Not confident — sending holding reply + notifying host`);
-          notifyHost({ guestName, messageBody: body, propertyName, draftedReply: reply }).catch(console.error);
+        if (!confident || !reply) {
+          console.log(`[poll/${tag}] Low confidence — escalated to host, no guest reply`);
+          notifyHost({ guestName, messageBody: body, propertyName }).catch(console.error);
+        } else {
+          scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
         }
-        scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
       } catch (e) {
         console.error(`[poll/${tag}] Error drafting reply: ${e.message}`);
       }
@@ -671,11 +672,12 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
 async function draftReply(guestName, messageBody, propertyName, propertyId) {
   const profileData = propertyProfiles.get(propertyId);
   const examples = propertyId ? findSimilarExamples(propertyId, messageBody) : [];
+  const vaultEntry = propertyId ? vault.getVaultEntry(propertyId)?.master : null;
 
   let systemPrompt;
 
   const JSON_INSTRUCTIONS = `
-You MUST respond with a single valid JSON object — no markdown fences, no extra text:
+You MUST respond with a single valid JSON object — no markdown fences, no reasoning text, no extra text before or after:
 {
   "confident": true or false,
   "reply": "the message to send the guest"
@@ -684,8 +686,13 @@ You MUST respond with a single valid JSON object — no markdown fences, no extr
 Confidence rules:
 - Set "confident": true when you can answer fully from the information provided.
 - Set "confident": false when you genuinely don't know the answer (e.g. specific codes, policies not in your context, third-party details).
-- When not confident, set "reply" to a warm holding message such as: "Great question! Let me check on that and get back to you shortly 😊"
-- NEVER invent facts. If unsure, be honest with the holding message.
+- NEVER invent facts. If unsure, set "confident": false and set "reply" to "".
+
+Common questions you CAN always answer confidently (set "confident": true):
+- Towel or linen requests: Tell them fresh towels are in the closet (or under the bathroom sink) and housekeeping can bring more if needed.
+- Early check-in or late checkout requests: Tell them you'll check on availability and get back to them shortly.
+- WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If no WiFi info is listed, set "confident": false.
+- Parking questions: Use the parking info from the PROPERTY DETAILS section above. If no parking info is listed, set "confident": false.
 
 Reply style rules:
 - Open with a brief warm greeting (e.g. "Hi [Name]!"), then immediately answer the question.
@@ -709,6 +716,9 @@ PROPERTY DETAILS:
 - Check-out: ${HOST_SETTINGS.checkout}
 - House rules: ${HOST_SETTINGS.houseRules}
 ${HOST_SETTINGS.extraContext ? `- Extra context: ${HOST_SETTINGS.extraContext}` : ''}
+${vaultEntry?.guest_access ? `- Guest access / WiFi: ${vaultEntry.guest_access}` : ''}
+${vaultEntry?.getting_around ? `- Parking / getting around: ${vaultEntry.getting_around}` : ''}
+${vaultEntry?.customNotes ? `- Additional notes: ${vaultEntry.customNotes}` : ''}
 ${exampleBlock}
 ${JSON_INSTRUCTIONS}`;
   } else {
@@ -718,21 +728,25 @@ Property: ${propertyName}
 Check-in: ${HOST_SETTINGS.checkin} | Check-out: ${HOST_SETTINGS.checkout}
 House rules: ${HOST_SETTINGS.houseRules}
 ${HOST_SETTINGS.extraContext ? `Context: ${HOST_SETTINGS.extraContext}` : ''}
+${vaultEntry?.guest_access ? `Guest access / WiFi: ${vaultEntry.guest_access}` : ''}
+${vaultEntry?.getting_around ? `Parking / getting around: ${vaultEntry.getting_around}` : ''}
+${vaultEntry?.customNotes ? `Additional notes: ${vaultEntry.customNotes}` : ''}
 ${JSON_INSTRUCTIONS}`;
   }
 
   const raw = await callClaude(systemPrompt, `Guest ${guestName} says: "${messageBody}"`, 600);
 
   try {
-    const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
-    return {
-      reply:     parsed.reply    || raw,
-      confident: parsed.confident !== false,
-    };
+    // Extract just the JSON object — ignore any reasoning text before or after it
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('no JSON object found');
+    const parsed = JSON.parse(jsonMatch[0]);
+    const reply = (parsed.reply || '').trim();
+    const confident = parsed.confident !== false && reply.length > 0;
+    return { reply: reply || null, confident };
   } catch (e) {
-    // Claude didn't return valid JSON — treat whole response as reply, assume confident
-    console.warn('[draft] Claude returned non-JSON — using raw text:', raw.slice(0, 100));
-    return { reply: raw, confident: true };
+    console.warn('[draft] Claude returned non-JSON — escalating to host. Raw:', raw.slice(0, 120));
+    return { reply: null, confident: false };
   }
 }
 
@@ -846,12 +860,13 @@ app.post('/webhook/hospitable', (req, res, next) => {
 
   try {
     const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId);
-    if (!confident) {
-      console.log(`[webhook] Not confident — sending holding reply + notifying host`);
-      notifyHost({ guestName, messageBody, propertyName, draftedReply: reply }).catch(console.error);
+    if (!confident || !reply) {
+      console.log(`[webhook] Low confidence — escalated to host, no guest reply`);
+      notifyHost({ guestName, messageBody, propertyName }).catch(console.error);
+    } else {
+      scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
+      console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
     }
-    scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
-    console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId} (confident=${confident})`);
   } catch (err) {
     console.error('[webhook] Error drafting reply:', err.message);
   }
