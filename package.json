@@ -15,6 +15,7 @@
     "nodemailer": "^6.10.1",
     "puppeteer": "^25.1.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "resend": "^6.12.4"
   }
 }

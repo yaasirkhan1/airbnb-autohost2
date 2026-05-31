@@ -3,6 +3,7 @@ const crypto       = require('crypto');
 const path         = require('path');
 const fs           = require('fs');
 const nodemailer   = require('nodemailer');
+const { Resend }   = require('resend');
 const vault        = require('./vault');
 
 const app = express();
@@ -859,36 +860,42 @@ Thank you,
 Yasser Khan
 Peachtree Tower Rentals`;
 
-  console.log(`[concierge] Sending email — unit=${unitLabel} guest="${guestName}"`);
+  const to = process.env.CONCIERGE_EMAIL_TO || '300ptconcierge@gmail.com';
+  console.log(`[concierge] Sending email — unit=${unitLabel} guest="${guestName}" to=${to}`);
 
-  const gmailUser = process.env.GMAIL_USER;
-  const gmailPass = process.env.GMAIL_APP_PASSWORD;
+  const resendKey  = process.env.RESEND_API_KEY;
+  const gmailUser  = process.env.GMAIL_USER;
+  const gmailPass  = process.env.GMAIL_APP_PASSWORD;
 
-  if (!gmailUser || !gmailPass) {
-    console.warn('[concierge] GMAIL_USER/GMAIL_APP_PASSWORD not set — logging email only');
-    console.warn(`[concierge] TO: 300ptconcierge@gmail.com | SUBJECT: ${subject}`);
+  if (!resendKey && !gmailUser) {
+    console.warn('[concierge] No email credentials set — logging email only');
+    console.warn(`[concierge] TO: ${to} | SUBJECT: ${subject}`);
     console.warn(`[concierge] BODY:\n${body}`);
     return;
   }
 
+  if (resendKey) {
+    // Resend HTTP API — works on Railway (no outbound SMTP port required)
+    const resend = new Resend(resendKey);
+    const from   = process.env.RESEND_FROM || `Peachtree Tower Rentals <${gmailUser || 'cal@peachtreestayatl.com'}>`;
+    const result = await resend.emails.send({ from, to, subject, text: body });
+    if (result.error) throw new Error(`Resend error: ${JSON.stringify(result.error)}`);
+    console.log(`[concierge] ✓ Email sent via Resend to ${to} — id=${result.data?.id}`);
+    return;
+  }
+
+  // Nodemailer SMTP fallback (may be blocked by some hosting providers)
   const transporter = nodemailer.createTransport({
-    host:             'smtp.gmail.com',
-    port:             465,
-    secure:           true,           // SSL — avoids STARTTLS handshake issues on Railway
-    auth:             { user: gmailUser, pass: gmailPass },
+    host:              'smtp.gmail.com',
+    port:              465,
+    secure:            true,
+    auth:              { user: gmailUser, pass: gmailPass },
     connectionTimeout: 10000,
     greetingTimeout:   10000,
     socketTimeout:     15000,
   });
-
-  await transporter.sendMail({
-    from: gmailUser,
-    to:   '300ptconcierge@gmail.com',
-    subject,
-    text: body,
-  });
-
-  console.log(`[concierge] ✓ Email sent to 300ptconcierge@gmail.com for ${guestName} in ${unitLabel}`);
+  await transporter.sendMail({ from: gmailUser, to, subject, text: body });
+  console.log(`[concierge] ✓ Email sent via SMTP to ${to} for ${guestName} in ${unitLabel}`);
 }
 
 function detectHardcodedResponse(guestName, messageBody) {
@@ -1511,7 +1518,7 @@ app.get('/health', (req, res) => res.json({
   uptime: Math.floor(process.uptime()),
   polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size, inquiriesDisabled: inquiriesUnavailable },
   pricingEngine: { active: !!pricingLastRun, lastRun: pricingLastRun, properties: ATLANTA_ALL_IDS.length, pendingChanges: pricingChanges.filter(e => e.push === 'pending_flag').length },
-  conciergeEmail: { gmailUserSet: !!process.env.GMAIL_USER, gmailPassSet: !!process.env.GMAIL_APP_PASSWORD },
+  conciergeEmail: { resendKeySet: !!process.env.RESEND_API_KEY, gmailUserSet: !!process.env.GMAIL_USER, gmailPassSet: !!process.env.GMAIL_APP_PASSWORD },
 }));
 
 app.get('/test', (req, res) => {
@@ -1549,43 +1556,30 @@ app.post('/api/test-concierge-email', async (req, res) => {
     resourceType = 'reservation',
   } = req.body;
 
+  const resendKey = process.env.RESEND_API_KEY;
   const gmailUser = process.env.GMAIL_USER;
-  const gmailPass = process.env.GMAIL_APP_PASSWORD;
 
-  if (!gmailUser || !gmailPass) {
-    return res.status(500).json({ error: 'GMAIL_USER or GMAIL_APP_PASSWORD not set in environment' });
+  if (!resendKey && !gmailUser) {
+    return res.status(500).json({ error: 'Set RESEND_API_KEY (preferred) or GMAIL_USER + GMAIL_APP_PASSWORD' });
   }
 
-  // Verify SMTP connection first — surfaces auth/network errors before sendMail
-  const transporter = nodemailer.createTransport({
-    host:             'smtp.gmail.com',
-    port:             465,
-    secure:           true,
-    auth:             { user: gmailUser, pass: gmailPass },
-    connectionTimeout: 10000,
-    greetingTimeout:   10000,
-    socketTimeout:     15000,
-  });
-
-  try {
-    await transporter.verify();
-  } catch (e) {
-    return res.status(500).json({
-      error:      'SMTP verify failed — check Gmail App Password and 2FA settings',
-      detail:     e.message,
-      gmailUser,
-    });
-  }
+  // Allow overriding the recipient for this single test call
+  const savedTo = process.env.CONCIERGE_EMAIL_TO;
+  if (req.body.test_to) process.env.CONCIERGE_EMAIL_TO = req.body.test_to;
 
   try {
     await sendConciergeEmail({ guestName, propertyId, resourceId, resourceType });
+    const sentTo = process.env.CONCIERGE_EMAIL_TO || '300ptconcierge@gmail.com';
+    if (req.body.test_to) process.env.CONCIERGE_EMAIL_TO = savedTo; // restore
     res.json({
       ok:        true,
-      sentTo:    '300ptconcierge@gmail.com',
+      sentTo,
       unit:      loadPropertiesMap()[propertyId]?.label || propertyId,
-      gmailUser,
+      transport: resendKey ? 'resend' : 'smtp',
+      gmailUser: gmailUser || '(not set)',
     });
   } catch (e) {
+    if (req.body.test_to) process.env.CONCIERGE_EMAIL_TO = savedTo;
     res.status(500).json({ error: e.message });
   }
 });
