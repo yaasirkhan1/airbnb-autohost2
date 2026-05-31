@@ -1,8 +1,9 @@
-const express    = require('express');
-const crypto     = require('crypto');
-const path       = require('path');
-const fs         = require('fs');
-const vault      = require('./vault');
+const express      = require('express');
+const crypto       = require('crypto');
+const path         = require('path');
+const fs           = require('fs');
+const nodemailer   = require('nodemailer');
+const vault        = require('./vault');
 
 const app = express();
 
@@ -438,10 +439,20 @@ async function pollInquiryMessages() {
     }
 
     for (const inquiry of inquiries) {
+      const propId   = inquiry.property_id
+        || inquiry.property?.id
+        || inquiry.properties?.[0]?.id
+        || null;
+      const propName = inquiry.property?.public_name
+        || inquiry.property?.name
+        || inquiry.properties?.[0]?.public_name
+        || 'your listing';
       await processNewMessages(
         inquiry.id,
         'inquiry',
         `/inquiries/${inquiry.id}/messages?per_page=10`,
+        propId,
+        propName,
       );
     }
   } catch (e) {
@@ -480,6 +491,12 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       const tag = resourceType.slice(0, 3);
       console.log(`[poll/${tag}] 📨 "${guestName}" property="${propertyName}" (${resourceId}): "${body.slice(0, 80)}"`);
       console.log(`[poll/${tag}] using profile: ${propertyProfiles.has(propertyId)}`);
+
+      // Concierge/front-desk email side-effect — fires before reply drafting
+      if (CONCIERGE_REGEX.test(body)) {
+        sendConciergeEmail({ guestName, propertyId, resourceId, resourceType })
+          .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
+      }
 
       try {
         const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId);
@@ -788,9 +805,98 @@ If you have any questions before arrival, we're always happy to help point you t
 Warm regards,
 Cal`;
 
+// ─── Concierge / front-desk access issues ────────────────────────────────────
+
+const CONCIERGE_REGEX = /front\s*desk|won'?t\s+let\s+me\s+in|wont\s+let\s+me\s+in|check.?in\s+form|form\s+not\s+sent|concierge|building\s+won'?t|building\s+wont|can'?t\s+get\s+in|cant\s+get\s+in|they\s+need\s+a\s+form|front\s+desk\s+needs|need\s+a\s+form|won'?t\s+allow|wont\s+allow|not\s+letting\s+me\s+in|cant\s+check\s*in|can'?t\s+check\s*in/i;
+
+async function getActiveReservation(propertyId) {
+  if (!propertyId) return null;
+  try {
+    const data = await hospGet(
+      `/reservations?properties[]=${propertyId}&status=accepted&per_page=5&include=guest`
+    );
+    const reservations = parseReservations(data);
+    const today = new Date().toISOString().slice(0, 10);
+    return (
+      reservations.find(r => {
+        const ci = (r.check_in  || r.checkin  || '').slice(0, 10);
+        const co = (r.check_out || r.checkout || '').slice(0, 10);
+        return ci && co && ci <= today && co >= today;
+      }) ||
+      reservations[0] ||
+      null
+    );
+  } catch (e) {
+    console.error('[concierge] Could not fetch reservation:', e.message);
+    return null;
+  }
+}
+
+async function sendConciergeEmail({ guestName, propertyId, resourceId, resourceType }) {
+  const propMap   = loadPropertiesMap();
+  const unitEntry = propMap[propertyId] || {};
+  const unitLabel = unitEntry.label || unitEntry.unit || `unit (${(propertyId || '').slice(0, 8)})`;
+
+  const reservation = resourceType === 'reservation'
+    ? await getActiveReservation(propertyId)
+    : null;
+  const checkIn  = reservation?.check_in  || reservation?.checkin  || 'N/A';
+  const checkOut = reservation?.check_out || reservation?.checkout || 'N/A';
+
+  const subject = `Check-In Info for Guest in ${unitLabel} | ${checkIn} - ${checkOut}`;
+  const body = `Hi,
+
+Please allow ${guestName} to access unit ${unitLabel}.
+
+Guest Name: ${guestName}
+Unit: ${unitLabel}
+Check-In: ${checkIn} at 4:00 PM
+Check-Out: ${checkOut}
+
+Please grant this guest full access to the unit for the duration of their stay.
+
+Thank you,
+Yasser Khan
+Peachtree Tower Rentals`;
+
+  console.log(`[concierge] Sending email — unit=${unitLabel} guest="${guestName}"`);
+
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailPass = process.env.GMAIL_APP_PASSWORD;
+
+  if (!gmailUser || !gmailPass) {
+    console.warn('[concierge] GMAIL_USER/GMAIL_APP_PASSWORD not set — logging email only');
+    console.warn(`[concierge] TO: 300ptconcierge@gmail.com | SUBJECT: ${subject}`);
+    console.warn(`[concierge] BODY:\n${body}`);
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: gmailUser, pass: gmailPass },
+  });
+
+  await transporter.sendMail({
+    from: gmailUser,
+    to:   '300ptconcierge@gmail.com',
+    subject,
+    text: body,
+  });
+
+  console.log(`[concierge] ✓ Email sent to 300ptconcierge@gmail.com for ${guestName} in ${unitLabel}`);
+}
+
 function detectHardcodedResponse(guestName, messageBody) {
   const b = messageBody.toLowerCase();
   const name = (guestName || 'there').split(' ')[0]; // first name only
+
+  // Front desk / building access — highest priority, fires before everything else
+  if (CONCIERGE_REGEX.test(b)) {
+    return {
+      confident: true,
+      reply: `Hi ${name}, I'm so sorry for the inconvenience! I've just emailed the front desk directly with your check-in information. Please let the front desk know that an email has been sent to them and to check their email — they should have everything they need to let you up right away. If you have any further trouble, reply here immediately and I'll call them directly. Welcome! 😊`,
+    };
+  }
 
   // Age requirement
   if (
@@ -1108,6 +1214,12 @@ app.post('/webhook/hospitable', (req, res, next) => {
 
   if (propertyId && !propertyProfiles.has(propertyId)) {
     learnPropertyProfile(propertyId, propertyName).catch(console.error);
+  }
+
+  // Concierge/front-desk email side-effect
+  if (CONCIERGE_REGEX.test(messageBody)) {
+    sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType })
+      .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
   }
 
   try {
