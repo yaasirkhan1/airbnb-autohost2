@@ -807,7 +807,7 @@ Cal`;
 
 // ─── Concierge / front-desk access issues ────────────────────────────────────
 
-const CONCIERGE_REGEX = /front\s*desk|won'?t\s+let\s+me\s+in|wont\s+let\s+me\s+in|check.?in\s+form|form\s+not\s+sent|concierge|building\s+won'?t|building\s+wont|can'?t\s+get\s+in|cant\s+get\s+in|they\s+need\s+a\s+form|front\s+desk\s+needs|need\s+a\s+form|won'?t\s+allow|wont\s+allow|not\s+letting\s+me\s+in|cant\s+check\s*in|can'?t\s+check\s*in/i;
+const CONCIERGE_REGEX = /won'?t\s+let\s+me\s+in|wont\s+let\s+me\s+in|can'?t\s+get\s+in|cant\s+get\s+in|check[\s-]in\s+form|form\s+not\s+sent|building\s+won'?t|building\s+wont|they\s+need\s+a\s+form|front\s+desk\s+needs|need\s+a\s+form|won'?t\s+allow|wont\s+allow|not\s+letting\s+me\s+in|can'?t\s+check\s*in|cant\s+check\s*in/i;
 
 async function getActiveReservation(propertyId) {
   if (!propertyId) return null;
@@ -894,7 +894,7 @@ function detectHardcodedResponse(guestName, messageBody) {
   if (CONCIERGE_REGEX.test(b)) {
     return {
       confident: true,
-      reply: `Hi ${name}, I'm so sorry for the inconvenience! I've just emailed the front desk directly with your check-in information. Please let the front desk know that an email has been sent to them and to check their email — they should have everything they need to let you up right away. If you have any further trouble, reply here immediately and I'll call them directly. Welcome! 😊`,
+      reply: `Hi ${name}, thanks for letting us know! A form was sent out this morning — I've also just emailed the front desk a supplementary email with your check-in information. Please let the front desk know that an email has been sent to them and to check their email — they should have everything they need to let you up right away. If you have any further trouble, reply here immediately and I'll call them directly. Welcome! 😊`,
     };
   }
 
