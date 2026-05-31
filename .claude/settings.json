@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/yasserkhan/airbnb-autohost2/.claude/hooks/syntax-check.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/yasserkhan/airbnb-autohost2/.claude/hooks/guard-data-files.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
