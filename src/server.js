@@ -5,6 +5,37 @@ const fs         = require('fs');
 const vault      = require('./vault');
 
 const app = express();
+
+// ─── Properties map (numeric/legacy ID → UUID + metadata) ────────────────────
+const PROPS_MAP_PATH = path.join(
+  process.env.DATA_DIR || path.join(__dirname, '../data'),
+  'properties-map.json'
+);
+
+function loadPropertiesMap() {
+  try {
+    if (fs.existsSync(PROPS_MAP_PATH)) return JSON.parse(fs.readFileSync(PROPS_MAP_PATH, 'utf8'));
+  } catch (e) {
+    console.error('[props-map] Failed to load:', e.message);
+  }
+  return {};
+}
+
+function savePropertiesMap(map) {
+  try {
+    fs.mkdirSync(path.dirname(PROPS_MAP_PATH), { recursive: true });
+    fs.writeFileSync(PROPS_MAP_PATH, JSON.stringify(map, null, 2));
+  } catch (e) {
+    console.error('[props-map] Failed to save:', e.message);
+  }
+}
+
+function upsertPropertiesMap(id, fields) {
+  const map = loadPropertiesMap();
+  map[id] = { ...map[id], ...fields, updatedAt: new Date().toISOString() };
+  savePropertiesMap(map);
+  return map[id];
+}
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
@@ -1399,6 +1430,20 @@ app.get('/api/properties/all', async (req, res) => {
   }
 });
 
+// GET /api/properties-map — view all stored property mappings
+app.get('/api/properties-map', (req, res) => {
+  res.json(loadPropertiesMap());
+});
+
+// POST /api/properties-map — manually add or update an entry
+// Body: { id, uuid?, label?, airbnb_name?, owner?, notes? }
+app.post('/api/properties-map', (req, res) => {
+  const { id, ...fields } = req.body;
+  if (!id) return res.status(400).json({ error: 'id required' });
+  const entry = upsertPropertiesMap(id, fields);
+  res.json({ ok: true, id, entry });
+});
+
 // POST /api/listing-populate
 // Pulls content from source property (vault or Hospitable fields), rewrites it
 // via Claude into unique copy, saves to vault for the target property, and
@@ -1416,17 +1461,59 @@ app.post('/api/listing-populate', async (req, res) => {
     const data = await hospGet('/properties?per_page=100');
     const properties = parseProperties(data);
 
-    const findProp = (id, nameQuery) => {
-      if (id) return properties.find(p => p.id === id) || null;
-      const q = (nameQuery || '').toLowerCase();
-      return properties.find(p =>
-        (p.name        || '').toLowerCase().includes(q) ||
-        (p.public_name || '').toLowerCase().includes(q)
-      ) || null;
+    // Also check the known properties map for numeric/legacy ID → UUID mapping
+    const propMap = loadPropertiesMap();
+
+    const findProp = async (id, nameQuery) => {
+      // 1. Check properties-map.json for a stored UUID mapping
+      if (id && propMap[id]?.uuid) {
+        const mapped = properties.find(p => p.id === propMap[id].uuid);
+        if (mapped) return mapped;
+      }
+
+      // 2. UUID match in list
+      if (id) {
+        const byUuid = properties.find(p => p.id === id);
+        if (byUuid) return byUuid;
+
+        // 3. Try direct Hospitable lookup — resolves numeric/legacy IDs to UUID
+        try {
+          console.log(`[populate] Trying direct Hospitable lookup for id="${id}"`);
+          const detail = await hospGet(`/properties/${id}`);
+          const p = detail.data || detail;
+          if (p?.id) {
+            console.log(`[populate] Resolved "${id}" → UUID ${p.id}`);
+            // Persist the numeric→UUID mapping for future calls
+            upsertPropertiesMap(id, { uuid: p.id, resolved_from: id });
+            const inList = properties.find(prop => prop.id === p.id);
+            return inList || p;
+          }
+        } catch (e) {
+          console.log(`[populate] Direct lookup for "${id}" failed: ${e.message.slice(0, 80)}`);
+        }
+
+        // 4. platform_id / external_id match
+        const byPlatform = properties.find(p =>
+          String(p.platform_id || '') === String(id) ||
+          String(p.external_id  || '') === String(id) ||
+          String(p.airbnb_id    || '') === String(id)
+        );
+        if (byPlatform) return byPlatform;
+      }
+
+      if (nameQuery) {
+        const q = nameQuery.toLowerCase();
+        return properties.find(p =>
+          (p.name        || '').toLowerCase().includes(q) ||
+          (p.public_name || '').toLowerCase().includes(q)
+        ) || null;
+      }
+
+      return null;
     };
 
-    const sourceProp = findProp(source_id, source_name);
-    const targetProp = findProp(target_id, target_name);
+    const sourceProp = await findProp(source_id, source_name);
+    const targetProp = await findProp(target_id, target_name);
 
     if (!sourceProp) return res.status(404).json({ error: `Source not found: ${source_id || source_name}` });
     if (!targetProp) return res.status(404).json({ error: `Target not found: ${target_id || target_name}` });

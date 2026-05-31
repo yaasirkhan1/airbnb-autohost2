@@ -1,0 +1,11 @@
+{
+  "2077758": {
+    "label": "Kal-18A",
+    "hospitable_id": "2077758",
+    "uuid": null,
+    "airbnb_name": "Walk to FIFA World Cup | Downtown ATL Retreat",
+    "owner": "Kal Suarez",
+    "notes": "Numeric Hospitable ID. UUID will be auto-resolved on first listing-populate call.",
+    "updatedAt": "2026-05-31T00:00:00.000Z"
+  }
+}
