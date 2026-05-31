@@ -64,7 +64,7 @@ let pollingSince      = null;     // ISO timestamp — only reply to messages af
 const HOST_SETTINGS = {
   name: process.env.HOST_NAME || 'Your Host',
   tone: process.env.HOST_TONE || 'warm and friendly',
-  checkin: process.env.CHECKIN_TIME || '3:00 PM',
+  checkin: process.env.CHECKIN_TIME || '4:00 PM',
   checkout: process.env.CHECKOUT_TIME || '11:00 AM',
   houseRules: process.env.HOUSE_RULES || 'No smoking, no parties, quiet hours after 10pm.',
   extraContext: process.env.EXTRA_CONTEXT || '',
@@ -499,6 +499,12 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
           .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
       }
 
+      // Maintenance emergency SMS side-effect — notify host immediately
+      if (MAINTENANCE_EMERGENCY_REGEX.test(body)) {
+        notifyHost({ guestName, messageBody: body, propertyName })
+          .catch(e => console.error(`[maintenance] SMS failed: ${e.message}`));
+      }
+
       try {
         const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId);
         if (!confident || !reply) {
@@ -808,7 +814,9 @@ Cal`;
 
 // ─── Concierge / front-desk access issues ────────────────────────────────────
 
-const CONCIERGE_REGEX = /won'?t\s+let\s+me\s+in|wont\s+let\s+me\s+in|can'?t\s+get\s+in|cant\s+get\s+in|check[\s-]in\s+form|form\s+not\s+sent|building\s+won'?t|building\s+wont|they\s+need\s+a\s+form|front\s+desk\s+needs|need\s+a\s+form|won'?t\s+allow|wont\s+allow|not\s+letting\s+me\s+in|can'?t\s+check\s*in|cant\s+check\s*in/i;
+const CONCIERGE_REGEX = /won'?t\s+let\s+me\s+in|wont\s+let\s+me\s+in|can'?t\s+get\s+in|cant\s+get\s+in|check[\s-]in\s+form|form\s+not\s+sent|building\s+won'?t|building\s+wont|they\s+need\s+a\s+form|front\s+desk\s+needs|need\s+a\s+form|won'?t\s+allow|wont\s+allow|not\s+letting\s+me\s+in|security\s+won'?t\s+let|won'?t\s+buzz\s+me|they\s+won'?t\s+buzz|guard\s+is\s+asking|asking\s+for\s+authorization|can'?t\s+get\s+to\s+my\s+floor|elevator\s+requires\s+a\s+key/i;
+
+const MAINTENANCE_EMERGENCY_REGEX = /water\s+leak|no\s+hot\s+water|smoke\s+alarm|fire\s+alarm|flood(ing)?|no\s+electricity|power\s+(is\s+)?out/i;
 
 async function getActiveReservation(propertyId) {
   if (!propertyId) return null;
@@ -910,6 +918,22 @@ function detectHardcodedResponse(guestName, messageBody) {
     };
   }
 
+  // Lockout / key not working — second-highest priority after concierge
+  if (/locked\s+out|key\s+doesn'?t\s+work|can'?t\s+open\s+the\s+door|lock\s+isn'?t\s+working|fob\s+stopped/.test(b)) {
+    return {
+      confident: true,
+      reply: `Hi ${name}, I'm sorry about that! Please call or text 954-552-2122 right away and we'll get you in immediately. 🔑`,
+    };
+  }
+
+  // Maintenance emergency
+  if (MAINTENANCE_EMERGENCY_REGEX.test(b)) {
+    return {
+      confident: true,
+      reply: `Hi ${name}, please contact building security at the front desk immediately for any in-unit emergency. You can also reach us directly at 954-552-2122. I'm being notified now. 🚨`,
+    };
+  }
+
   // Age requirement
   if (
     /\bage\b|how old|minimum age|age requirement|\byoung\b|years old/.test(b) ||
@@ -956,6 +980,14 @@ function detectHardcodedResponse(guestName, messageBody) {
   // Parking
   if (/\bpark(ing)?\b/.test(b)) {
     return { confident: true, reply: PARKING_REPLY };
+  }
+
+  // WiFi / internet
+  if (/\bwi?-?fi\b|\bpassword\b|\binternet\b|\bnetwork\b/.test(b)) {
+    return {
+      confident: true,
+      reply: `Hi ${name}, the WiFi network name and password are posted on the welcome card inside the unit and will also be included in your check-in instructions sent 24 hours before arrival. If you're already checked in and can't find it, reply here and I'll send it right over! 😊`,
+    };
   }
 
   return null;
