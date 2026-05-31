@@ -1506,6 +1506,7 @@ app.get('/health', (req, res) => res.json({
   uptime: Math.floor(process.uptime()),
   polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size, inquiriesDisabled: inquiriesUnavailable },
   pricingEngine: { active: !!pricingLastRun, lastRun: pricingLastRun, properties: ATLANTA_ALL_IDS.length, pendingChanges: pricingChanges.filter(e => e.push === 'pending_flag').length },
+  conciergeEmail: { gmailUserSet: !!process.env.GMAIL_USER, gmailPassSet: !!process.env.GMAIL_APP_PASSWORD },
 }));
 
 app.get('/test', (req, res) => {
@@ -1530,6 +1531,29 @@ app.get('/test', (req, res) => {
       profilesLoaded: propertyProfiles.size,
     },
   });
+});
+
+// POST /api/test-concierge-email
+// Directly exercises sendConciergeEmail — verifies nodemailer → Gmail SMTP connection.
+// Body: { guestName?, propertyId?, resourceId?, resourceType? }
+app.post('/api/test-concierge-email', async (req, res) => {
+  const {
+    guestName    = 'Test Guest',
+    propertyId   = '80c21aac-00eb-49af-9094-6792839ff5a4', // defaults to unit 4-L
+    resourceId   = 'test-reservation-001',
+    resourceType = 'reservation',
+  } = req.body;
+  try {
+    await sendConciergeEmail({ guestName, propertyId, resourceId, resourceType });
+    res.json({
+      ok:     true,
+      sentTo: '300ptconcierge@gmail.com',
+      unit:   loadPropertiesMap()[propertyId]?.label || propertyId,
+      gmailUser: process.env.GMAIL_USER || '(not set)',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Simulate a webhook for manual testing
