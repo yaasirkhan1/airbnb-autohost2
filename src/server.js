@@ -1373,6 +1373,207 @@ app.post('/webhook/test', async (req, res) => {
   }
 });
 
+// ─── Property browser + listing populate ─────────────────────────────────────
+
+// GET /api/properties/all
+// Returns all Hospitable properties with internal name, public title, and a
+// short description snippet — useful for identifying property IDs.
+app.get('/api/properties/all', async (req, res) => {
+  try {
+    const data = await hospGet('/properties?per_page=100');
+    const properties = parseProperties(data);
+    res.json({
+      count: properties.length,
+      properties: properties.map(p => ({
+        id:          p.id,
+        name:        p.name,            // internal Hospitable label (e.g. "18-A")
+        public_name: p.public_name,     // Airbnb listing title
+        description: (p.description || p.summary || '').slice(0, 200),
+        platform:    p.platform || p.channel || null,
+        bedrooms:    p.bedrooms || null,
+        city:        p.city || p.address?.city || null,
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/listing-populate
+// Pulls content from source property (vault or Hospitable fields), rewrites it
+// via Claude into unique copy, saves to vault for the target property, and
+// attempts a Hospitable PUT (may not be supported by public API).
+//
+// Body: { source_id?, source_name?, target_id?, target_name? }
+//   Use source_name / target_name for fuzzy substring match on name/public_name.
+app.post('/api/listing-populate', async (req, res) => {
+  const { source_id, target_id, source_name, target_name } = req.body;
+  if (!source_id && !source_name) return res.status(400).json({ error: 'source_id or source_name required' });
+  if (!target_id && !target_name) return res.status(400).json({ error: 'target_id or target_name required' });
+
+  try {
+    // ── 1. Find source and target properties ──────────────────────────────────
+    const data = await hospGet('/properties?per_page=100');
+    const properties = parseProperties(data);
+
+    const findProp = (id, nameQuery) => {
+      if (id) return properties.find(p => p.id === id) || null;
+      const q = (nameQuery || '').toLowerCase();
+      return properties.find(p =>
+        (p.name        || '').toLowerCase().includes(q) ||
+        (p.public_name || '').toLowerCase().includes(q)
+      ) || null;
+    };
+
+    const sourceProp = findProp(source_id, source_name);
+    const targetProp = findProp(target_id, target_name);
+
+    if (!sourceProp) return res.status(404).json({ error: `Source not found: ${source_id || source_name}` });
+    if (!targetProp) return res.status(404).json({ error: `Target not found: ${target_id || target_name}` });
+
+    const sourceLabel = sourceProp.name || sourceProp.public_name || sourceProp.id;
+    const targetLabel = targetProp.public_name || targetProp.name || targetProp.id;
+    console.log(`[populate] ${sourceLabel} (${sourceProp.id.slice(0,8)}…) → ${targetLabel} (${targetProp.id.slice(0,8)}…)`);
+
+    // ── 2. Build source content — vault first, then Hospitable fields ─────────
+    const sv = vault.getVaultEntry(sourceProp.id)?.master || {};
+    const sp = sourceProp;
+
+    const src = {
+      title:          sv.title          || sp.public_name || sp.name || '',
+      summary:        sv.summary        || sp.description || sp.summary || '',
+      the_space:      sv.the_space      || sp.space_overview || sp.the_space || '',
+      guest_access:   sv.guest_access   || sp.guest_access || sp.access || '',
+      neighborhood:   sv.neighborhood   || sp.neighborhood_description || sp.neighborhood_overview || '',
+      getting_around: sv.getting_around || sp.getting_around || sp.transit || '',
+      other_notes:    sv.other_notes    || sp.other_details || sp.other_notes || sp.notes || '',
+      houseRules:     sv.houseRules     || formatHouseRules(sp.house_rules) || '',
+      customNotes:    sv.customNotes    || '',
+      amenities:      Array.isArray(sp.amenities)
+        ? sp.amenities.map(a => a.name || a.label || a).join(', ')
+        : '',
+    };
+
+    // ── 3. Rewrite via Claude ─────────────────────────────────────────────────
+    const systemPrompt = `You are an expert Airbnb copywriter for FIFA World Cup Atlanta 2026 listings.
+
+Rewrite the provided source listing into completely unique copy for a new listing on the same property/building. The new copy must not be flaggable as duplicate content by Airbnb.
+
+Rules:
+- Preserve every factual detail (location, specific amenities, check-in/out, rules, features)
+- Use a completely different opening angle, sentence structure, and vocabulary
+- Lead with a different hook — if the source leads with location, lead with the experience, etc.
+- FIFA World Cup 2026 angle must remain prominent in the title and opening
+- Title ≤ 50 characters
+- Be compelling and conversion-focused
+
+Return ONLY valid JSON, no markdown fences, no extra text:
+{
+  "title": "≤50 char title",
+  "summary": "2–3 sentence hook with a fresh angle",
+  "the_space": "physical space description, different structure from source",
+  "guest_access": "what guests can use",
+  "neighborhood": "neighborhood, different emphasis than source",
+  "getting_around": "transport and parking",
+  "other_notes": "any other useful info for guests",
+  "houseRules": "house rules as a concise paragraph"
+}`;
+
+    const userMsg = `Source internal label: "${sourceLabel}"
+Target listing: "${targetLabel}"
+
+SOURCE LISTING CONTENT:
+TITLE: ${src.title || '(none)'}
+SUMMARY: ${src.summary || '(none)'}
+THE SPACE: ${src.the_space || '(none)'}
+GUEST ACCESS: ${src.guest_access || '(none)'}
+NEIGHBORHOOD: ${src.neighborhood || '(none)'}
+GETTING AROUND: ${src.getting_around || '(none)'}
+OTHER NOTES: ${src.other_notes || '(none)'}
+HOUSE RULES: ${src.houseRules || '(none)'}
+AMENITIES: ${src.amenities || '(none)'}
+${src.customNotes ? `CUSTOM NOTES: ${src.customNotes}` : ''}
+
+Rewrite this into completely unique listing copy.`;
+
+    const raw = await callClaude(systemPrompt, userMsg, 2000);
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return res.status(500).json({ error: 'Claude returned no JSON', raw: raw.slice(0, 400) });
+
+    let rewritten;
+    try {
+      rewritten = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      return res.status(500).json({ error: 'JSON parse failed', raw: raw.slice(0, 400) });
+    }
+
+    // ── 4. Save rewritten content to vault for target ─────────────────────────
+    vault.saveToVault(targetProp.id, {
+      title:          rewritten.title,
+      summary:        rewritten.summary,
+      the_space:      rewritten.the_space,
+      guest_access:   rewritten.guest_access,
+      neighborhood:   rewritten.neighborhood,
+      getting_around: rewritten.getting_around,
+      other_notes:    rewritten.other_notes,
+      houseRules:     rewritten.houseRules,
+      propertyName:   targetLabel,
+      customNotes:    `Rewritten from source: ${sourceLabel} (${sourceProp.id})`,
+    });
+    console.log(`[populate] ✓ Saved to vault for ${targetProp.id.slice(0,8)}…`);
+
+    // ── 5. Attempt Hospitable push (public API may not support content writes) ─
+    let hospPush = 'not_attempted';
+    try {
+      await hospPut(`/properties/${targetProp.id}`, {
+        public_name:              rewritten.title,
+        description:              [rewritten.summary, rewritten.the_space].filter(Boolean).join('\n\n'),
+        the_space:                rewritten.the_space,
+        guest_access:             rewritten.guest_access,
+        neighborhood_description: rewritten.neighborhood,
+        getting_around:           rewritten.getting_around,
+        other_details:            rewritten.other_notes,
+      });
+      hospPush = 'pushed';
+      console.log(`[populate] ✓ Pushed to Hospitable for ${targetProp.id.slice(0,8)}…`);
+    } catch (e) {
+      hospPush = `api_unsupported: ${e.message.slice(0, 100)}`;
+      console.log(`[populate] Hospitable push skipped (${e.message.slice(0, 60)}) — use clipboard below`);
+    }
+
+    // ── 6. Format clipboard output ────────────────────────────────────────────
+    const sections = [
+      ['TITLE',          rewritten.title],
+      ['SUMMARY',        rewritten.summary],
+      ['THE SPACE',      rewritten.the_space],
+      ['GUEST ACCESS',   rewritten.guest_access],
+      ['NEIGHBORHOOD',   rewritten.neighborhood],
+      ['GETTING AROUND', rewritten.getting_around],
+      ['OTHER NOTES',    rewritten.other_notes],
+      ['HOUSE RULES',    rewritten.houseRules],
+    ];
+    const clipboard = sections.filter(([, v]) => v).map(([k, v]) => `${k}:\n${v}`).join('\n\n');
+
+    res.json({
+      ok: true,
+      source:          { id: sourceProp.id, label: sourceLabel },
+      target:          { id: targetProp.id, label: targetLabel },
+      before: {
+        title:   src.title,
+        summary: src.summary.slice(0, 400),
+      },
+      after:           rewritten,
+      vault_saved:     true,
+      hospitable_push: hospPush,
+      clipboard,
+    });
+
+  } catch (e) {
+    console.error('[populate] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
