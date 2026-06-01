@@ -6,6 +6,7 @@ const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
 const cron         = require('node-cron');
 const vault        = require('./vault');
+const { isWithinGrace, loadSeen, saveSeen } = require('./seen-store');
 
 const app = express();
 
@@ -316,6 +317,12 @@ async function warmUpSeenMessages() {
   if (!knownPropertyIds.length) return;
   console.log('[poll] Warm-up — marking existing inbox messages as seen...');
 
+  // Restore persisted seen-keys first so a restart doesn't re-reply to messages
+  // we already handled (the in-memory Set is otherwise wiped on every restart).
+  const persisted = loadSeen();
+  for (const k of persisted) seenMessageIds.add(k);
+  console.log(`[poll] Warm-up: restored ${persisted.size} persisted seen-keys`);
+
   // Grace window: messages younger than 5 minutes are NOT marked seen.
   // pollingSince is also set to this same cutoff so the two systems stay aligned.
   const graceCutoff = toHospitableDate(new Date(Date.now() - 5 * 60 * 1000));
@@ -332,7 +339,7 @@ async function warmUpSeenMessages() {
         const msgData = await hospGet(`/reservations/${r.id}/messages?per_page=20`);
         const messages = parseMessages(msgData);
         for (const m of messages) {
-          if (m.created_at && m.created_at > graceCutoff) {
+          if (isWithinGrace(m.created_at)) {
             console.log(`[poll] Warm-up: leaving recent reservation message unseen (${m.created_at})`);
             continue;
           }
@@ -370,6 +377,7 @@ async function warmUpSeenMessages() {
     }
   }
 
+  saveSeen(seenMessageIds);
   console.log(`[poll] Warm-up done — ${seenMessageIds.size} existing messages marked seen (grace window: ${graceCutoff})`);
 }
 
@@ -472,6 +480,7 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       if (seenMessageIds.size > 2000) {
         seenMessageIds.delete(seenMessageIds.values().next().value);
       }
+      saveSeen(seenMessageIds);
 
       if (msg.created_at && msg.created_at < pollingSince) continue;
 
@@ -1288,6 +1297,7 @@ app.post('/webhook/hospitable', (req, res, next) => {
     return;
   }
   seenMessageIds.add(dedupKey);
+  saveSeen(seenMessageIds);
 
   // Fetch property info from reservation (inquiries may not have property context)
   let propertyId   = null;
@@ -1372,6 +1382,12 @@ function scheduleReply(resourceId, guestName, originalMessage, draftedReply, pro
 }
 
 async function sendToHospitable(resourceId, body, resourceType = 'reservation') {
+  // Global pause switch: AUTOSEND=false stops all outbound sends (replies +
+  // cancellation follow-ups) without taking the service down.
+  if (!HOST_SETTINGS.autosend) {
+    console.log(`[send] AUTOSEND=false — responder PAUSED; not sending (${resourceType} ${resourceId})`);
+    return { paused: true };
+  }
   // Reservations: POST /reservations/{uuid}/messages  (documented in OpenAPI spec)
   // Inquiries:    POST /inquiries/{uuid}/messages     (added Sept 2024, not yet in spec)
   const segment = resourceType === 'inquiry' ? 'inquiries' : 'reservations';
