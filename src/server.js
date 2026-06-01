@@ -805,6 +805,10 @@ Cal`;
 // ─── Concierge / front-desk access issues ────────────────────────────────────
 
 const CONCIERGE_REGEX = new RegExp(
+  // Every apostrophe below is written straight ('); .replace() at the end turns
+  // each one into the class ['’] so the regex matches BOTH straight and curly
+  // (U+2019) apostrophes — phone keyboards autoinsert the curly one.
+  (
   // Physical denial / access blocked
   "won'?t\\s+let\\s+me\\s+in|wont\\s+let\\s+me\\s+in" +
   "|can'?t\\s+get\\s+in|cant\\s+get\\s+in" +
@@ -838,7 +842,7 @@ const CONCIERGE_REGEX = new RegExp(
   // never got my form", "no one sent the form to the building".
   "|(?=[\\s\\S]*\\bform\\b)(?=[\\s\\S]*\\b(?:never|not|wasn'?t|hasn'?t|haven'?t|didn'?t|did\\s+not|no\\s+one|nobody)\\s+(?:\\w+\\s+){0,2}?(?:sent|send|receiv\\w*|got|get|gotten|gave|give|provided)\\b)" +
   // Front desk / concierge doesn't have (or never received) the reservation
-  "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:doesn['’]?t|does\\s+not|didn['’]?t|did\\s+not|don['’]?t\\s+have|do\\s+not\\s+have|no\\s+record|can['’]?t\\s+find|cannot\\s+find|never\\s+(?:got|received)))(?=[\\s\\S]*(?:front\\s+desk|\\bdesk\\b|concierge|reception|lobby|building|\\bthey\\b|system))" +
+  "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:doesn'?t|does\\s+not|didn'?t|did\\s+not|don'?t\\s+have|do\\s+not\\s+have|no\\s+record|can'?t\\s+find|cannot\\s+find|never\\s+(?:got|received)))(?=[\\s\\S]*(?:front\\s+desk|\\bdesk\\b|concierge|reception|lobby|building|\\bthey\\b|system))" +
   // Asking us to send / forward the reservation to the concierge / front desk / building
   "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|over\\s+to))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|building|reception|lobby))" +
   // Key fob (building access device)
@@ -846,7 +850,8 @@ const CONCIERGE_REGEX = new RegExp(
   // Entry / door / access / gate code requests
   "|entry\\s+code|door\\s+code|access\\s+code|gate\\s+code|key\\s+code|building\\s+code" +
   // Compound: location word + access-denial word anywhere in the message
-  "|(?=[\\s\\S]*(?:desk|lobby|reception))(?=[\\s\\S]*(?:can'?t|unable|no\\s+reservation|won'?t|wont|not\\s+letting))",
+  "|(?=[\\s\\S]*(?:desk|lobby|reception))(?=[\\s\\S]*(?:can'?t|unable|no\\s+reservation|won'?t|wont|not\\s+letting))"
+  ).replace(/'/g, "['’]"),  // accept straight ' and curly ’ apostrophes (mobile keyboards)
   "i"
 );
 
