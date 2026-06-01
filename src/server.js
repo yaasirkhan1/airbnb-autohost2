@@ -2242,7 +2242,7 @@ function formatCleaningLine(entry) {
   return `• ${entry.label} — ${deadPart}, ${vacPart}`;
 }
 
-async function sendCleaningSchedule(overrideTo = null) {
+async function sendCleaningSchedule() {
   const tomorrow    = tomorrowDateString();
   const spanishDate = formatSpanishDate(tomorrow);
   console.log(`[cleaning] Running schedule for ${tomorrow} (${spanishDate})`);
@@ -2277,38 +2277,44 @@ async function sendCleaningSchedule(overrideTo = null) {
 
   console.log(`[cleaning] SMS:\n${smsBody}`);
 
-  const apiKey = process.env.QUO_API_KEY;
-  const from   = process.env.QUO_FROM_NUMBER;
-  const to     = overrideTo || '229-573-3899'; // cleaning team
+  const apiKey    = process.env.QUO_API_KEY;
+  const from      = process.env.QUO_FROM_NUMBER;
+  const recipients = ['229-573-3899', '954-552-2122']; // cleaner + host
 
   if (!apiKey || !from) {
     console.warn('[cleaning] QUO_API_KEY or QUO_FROM_NUMBER not set — SMS not sent');
     return { ok: false, smsBody, error: 'QUO not configured' };
   }
 
-  try {
-    const res = await fetch('https://api.openphone.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: [to], from, content: smsBody }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`OpenPhone ${res.status}: ${err}`);
+  const results = [];
+  for (const to of recipients) {
+    try {
+      const res = await fetch('https://api.openphone.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: [to], from, content: smsBody }),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`OpenPhone ${res.status}: ${err}`);
+      }
+      console.log(`[cleaning] ✓ SMS sent to ${to}`);
+      results.push({ to, ok: true });
+    } catch (e) {
+      console.error(`[cleaning] SMS failed for ${to}: ${e.message}`);
+      results.push({ to, ok: false, error: e.message });
     }
-    console.log(`[cleaning] ✓ SMS sent to ${to}`);
-    return { ok: true, smsBody, entries: entries.length };
-  } catch (e) {
-    console.error(`[cleaning] SMS failed: ${e.message}`);
-    return { ok: false, smsBody, error: e.message };
   }
+
+  const allOk = results.every(r => r.ok);
+  return { ok: allOk, smsBody, entries: entries.length, recipients: results };
 }
 
 // ─── Test endpoint ────────────────────────────────────────────────────────────
 
 app.post('/api/test-cleaning-schedule', async (req, res) => {
   try {
-    const result = await sendCleaningSchedule('954-552-2122');
+    const result = await sendCleaningSchedule();
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
