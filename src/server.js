@@ -2151,10 +2151,18 @@ async function getReservationsForDate(propertyId, dateStr) {
 }
 
 // PRIMARY detection: calendar-based occupancy check.
-// A cleaning is needed on `targetDate` when:
-//   - The night BEFORE (targetDate - 1) was occupied (available: false)
-//   - targetDate itself is free (available: true)  → guest checked out this morning
-// A same-day incoming guest exists when targetDate is also occupied (available: false).
+//
+// Rules:
+//   needsCleaning:      priorDay is RESERVED (not just USER-blocked) AND targetDay is free
+//   hasSameDayIncoming: cleaning needed AND the reservations API confirms a new check-in on targetDate
+//
+// Why filter on reason==="RESERVED":
+//   - "RESERVED" = Airbnb guest booked → cleaning needed after departure
+//   - "BLOCKED" + source_type="USER" = host manually blocked, no guest → no cleaning needed
+//
+// Why use reservations to confirm back-to-back (not just calendar):
+//   - Two consecutive RESERVED days could be the same multi-night guest (no checkout yet)
+//     or two different guests (back-to-back). The calendar alone cannot distinguish them.
 async function getCalendarOccupancy(propertyId, targetDate) {
   const priorDate = dateOffset(targetDate, -1);
   try {
@@ -2164,31 +2172,35 @@ async function getCalendarOccupancy(propertyId, targetDate) {
     const days = data?.data?.days || data?.days || (Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []));
     const dayMap = Object.fromEntries(days.map(d => [d.date, d]));
 
-    const priorAvailable  = dayMap[priorDate]?.status?.available;
-    const targetAvailable = dayMap[targetDate]?.status?.available;
+    const priorDay  = dayMap[priorDate];
+    const targetDay = dayMap[targetDate];
 
-    console.log(`[cleaning] ${propertyId.slice(0,8)}… calendar ${priorDate}=${priorAvailable} ${targetDate}=${targetAvailable}`);
+    const priorReason    = priorDay?.status?.reason;
+    const targetAvailable = targetDay?.status?.available;
 
-    // Prior night occupied AND target date free = checkout/cleaning day
-    const needsCleaning      = priorAvailable === false && targetAvailable !== false;
-    // Prior night occupied AND target date also occupied = back-to-back (checkout + same-day checkin)
-    const hasSameDayIncoming = priorAvailable === false && targetAvailable === false;
+    console.log(`[cleaning] ${propertyId.slice(0,8)}… calendar prior(${priorDate}): reason=${priorReason} avail=${priorDay?.status?.available} | target(${targetDate}): reason=${targetDay?.status?.reason} avail=${targetAvailable}`);
 
-    return { needsCleaning: needsCleaning || hasSameDayIncoming, hasSameDayIncoming };
+    // Only flag cleaning if prior night had an actual RESERVATION (not a manual USER block)
+    const needsCleaning = priorReason === 'RESERVED' && targetAvailable !== false;
+
+    return { needsCleaning };
   } catch (e) {
     console.error(`[cleaning] Calendar lookup FAILED for ${propertyId}: ${e.message}`);
-    return { needsCleaning: false, hasSameDayIncoming: false };
+    return { needsCleaning: false };
   }
 }
 
 async function buildCleaningEntry(unit, tomorrow) {
-  // Calendar is the primary signal — reliable regardless of reservation status
-  const { needsCleaning, hasSameDayIncoming } = await getCalendarOccupancy(unit.id, tomorrow);
+  // Step 1: calendar confirms a guest checked out this morning
+  const { needsCleaning } = await getCalendarOccupancy(unit.id, tomorrow);
   if (!needsCleaning) return null;
 
-  // Try to find the reservation for message-thread analysis (late checkout / early check-in)
-  // No status filter — catches accepted, checked_in, or even cancelled-but-still-blocked
+  // Step 2: reservations API for enrichment — late checkout/early check-in message analysis
+  // and to detect same-day incoming guest (back-to-back)
   const { outgoing, incoming } = await getReservationsForDate(unit.id, tomorrow);
+
+  // Back-to-back confirmed only if the reservations API has an actual incoming check-in today
+  const hasSameDayIncoming = incoming.length > 0;
 
   // --- Vacancy time ---
   let vacancyTime      = '11:00AM';
@@ -2206,12 +2218,10 @@ async function buildCleaningEntry(unit, tomorrow) {
   let deadlineConfirmed = false;
   if (hasSameDayIncoming) {
     deadlineTime = '4:00PM';
-    if (incoming.length > 0) {
-      const msgs = await getReservationMessages(incoming[0].id);
-      if (detectPaidAdjustment(msgs, 'early_checkin')) {
-        deadlineTime      = '1:00PM';
-        deadlineConfirmed = true;
-      }
+    const msgs = await getReservationMessages(incoming[0].id);
+    if (detectPaidAdjustment(msgs, 'early_checkin')) {
+      deadlineTime      = '1:00PM';
+      deadlineConfirmed = true;
     }
   }
 
