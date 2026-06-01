@@ -427,6 +427,8 @@ async function pollReservationMessages() {
 // yet in the public OpenAPI spec. We probe them optimistically and back off if
 // the endpoint is unavailable (404) or not scoped (403).
 let inquiriesUnavailable = false;
+let inquiryFailCount     = 0;
+const INQUIRY_FAIL_LIMIT = 5;
 
 async function pollInquiryMessages() {
   if (inquiriesUnavailable) return;
@@ -435,6 +437,8 @@ async function pollInquiryMessages() {
     const since = toHospitableDate(new Date(Date.now() - 90 * 1000));
     const data  = await hospGet(`/inquiries?last_message_at=${encodeURIComponent(since)}&per_page=50`);
     const inquiries = parseInquiries(data);
+
+    inquiryFailCount = 0; // reset on success
 
     if (inquiries.length) {
       console.log(`[poll/inq] ${inquiries.length} inquir${inquiries.length === 1 ? 'y' : 'ies'} with recent messages`);
@@ -459,8 +463,13 @@ async function pollInquiryMessages() {
     }
   } catch (e) {
     if (e.message.includes('404') || e.message.includes('403')) {
-      inquiriesUnavailable = true;
-      console.log(`[poll/inq] Inquiry endpoint unavailable (${e.message.split(':')[0]}) — skipping in future polls. To enable: contact team-platform@hospitable.com for inquiry:read scope.`);
+      inquiryFailCount++;
+      if (inquiryFailCount >= INQUIRY_FAIL_LIMIT) {
+        inquiriesUnavailable = true;
+        console.error(`[poll/inq] CRITICAL: inquiry endpoint failed ${INQUIRY_FAIL_LIMIT} consecutive times — permanently disabling. Check inquiry:read scope. Last error: ${e.message.split(':')[0]}`);
+      } else {
+        console.warn(`[poll/inq] Inquiry endpoint error (${e.message.split(':')[0]}) — skipping this cycle (fail ${inquiryFailCount}/${INQUIRY_FAIL_LIMIT})`);
+      }
     } else {
       console.error('[poll/inq] Error:', e.message);
     }
@@ -1580,7 +1589,7 @@ app.get('/health', (req, res) => res.json({
   pending: pendingReplies.size,
   profilesLoaded: propertyProfiles.size,
   uptime: Math.floor(process.uptime()),
-  polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size, inquiriesDisabled: inquiriesUnavailable },
+  polling: { active: !!pollingSince, since: pollingSince, propertiesLoaded: knownPropertyIds.length, seenMessages: seenMessageIds.size, inquiriesDisabled: inquiriesUnavailable, inquiryFailCount },
   pricingEngine: { active: !!pricingLastRun, lastRun: pricingLastRun, properties: ATLANTA_ALL_IDS.length, pendingChanges: pricingChanges.filter(e => e.push === 'pending_flag').length },
   conciergeEmail: { resendKeySet: !!process.env.RESEND_API_KEY, gmailUserSet: !!process.env.GMAIL_USER, gmailPassSet: !!process.env.GMAIL_APP_PASSWORD },
 }));
