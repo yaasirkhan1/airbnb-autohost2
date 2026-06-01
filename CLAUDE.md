@@ -1,5 +1,33 @@
 # airbnb-autohost2 — Project Reference
 
+---
+
+## DEVELOPMENT WORKFLOW
+
+### New Feature
+1. **`brainstorming` skill** — explore what Hospitable/Railway actually supports before writing any code
+2. **`writing-plans` skill** — map which functions get touched; server.js is 2100+ lines
+3. Implement
+4. **`requesting-code-review` skill** — before any deploy
+5. `railway up --detach`
+6. **`railway logs -n 50 | grep -i "error\|fail\|warn"`** — non-negotiable after every deploy
+7. **`/deploy-check`** — confirm behavior change is actually live
+
+### Bug Fix
+1. **`systematic-debugging` skill** — reproduce → root cause → fix (do not write code before root cause is confirmed)
+2. `railway up --detach`
+3. `railway logs -n 50 | grep -i "error\|fail\|warn"`
+4. **`/deploy-check`**
+
+### Multi-Unit Task (listing briefs, bulk calendar checks, multi-property queries)
+1. **`dispatching-parallel-agents` skill**
+
+### Rule
+**Never announce a deploy as complete without running the log grep and `/deploy-check` first.**
+A clean deploy is not "pushed to GitHub" — it is "logs show no errors and behavior is confirmed."
+
+---
+
 ## Project Overview
 
 24/7 auto-responder for **7 Airbnb properties** at **300 Peachtree Road NE, Downtown Atlanta, GA**. The server polls Hospitable every 60 seconds for new guest messages, runs them through a hardcoded trigger matcher, and falls back to Claude (claude-sonnet-4-6) for anything that doesn't match. All replies are signed **"Cal"**.
