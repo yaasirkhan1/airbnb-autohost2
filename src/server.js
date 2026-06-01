@@ -2276,6 +2276,40 @@ app.post('/api/test-cleaning-schedule', async (req, res) => {
   }
 });
 
+// Temporary debug endpoint — shows raw reservation fields for a property
+app.get('/api/debug-reservations/:propertyId', async (req, res) => {
+  try {
+    const raw = await hospGet(
+      `/reservations?properties[]=${req.params.propertyId}&status=accepted&per_page=10&include=guest`
+    );
+    const reservations = parseReservations(raw);
+    // Return the first reservation's full key set so we can see the exact field names
+    res.json({
+      count: reservations.length,
+      firstReservationKeys: reservations[0] ? Object.keys(reservations[0]) : [],
+      first: reservations[0] || null,
+      all: reservations.map(r => ({
+        id: r.id,
+        // Show every possible date field name
+        check_in:      r.check_in,
+        checkin:       r.checkin,
+        check_in_date: r.check_in_date,
+        start_date:    r.start_date,
+        arrival:       r.arrival,
+        check_out:      r.check_out,
+        checkout:       r.checkout,
+        check_out_date: r.check_out_date,
+        end_date:       r.end_date,
+        departure:      r.departure,
+        status: r.status,
+        guest: r.guest?.full_name || r.guest?.first_name,
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
