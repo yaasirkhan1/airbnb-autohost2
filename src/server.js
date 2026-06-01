@@ -351,7 +351,7 @@ async function warmUpSeenMessages() {
   // on restart, and we must not double-reply to old ones.
   if (!inquiriesUnavailable) {
     try {
-      const data = await hospGet('/inquiries?per_page=50');
+      const data = await hospGet(`/inquiries?${buildPropertyQs()}&per_page=50`);
       const inquiries = parseInquiries(data);
       console.log(`[poll] Warm-up: found ${inquiries.length} inquiries to scan`);
 
@@ -435,7 +435,8 @@ async function pollInquiryMessages() {
 
   try {
     const since = toHospitableDate(new Date(Date.now() - 90 * 1000));
-    const data  = await hospGet(`/inquiries?last_message_at=${encodeURIComponent(since)}&per_page=50`);
+    const qs   = buildPropertyQs();
+    const data  = await hospGet(`/inquiries?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
     const inquiries = parseInquiries(data);
 
     inquiryFailCount = 0; // reset on success
@@ -606,7 +607,7 @@ async function countPropertyInquiries(propertyId, windowHours) {
 
   if (!inquiriesUnavailable) {
     try {
-      const data = await hospGet(`/inquiries?last_message_at=${encodeURIComponent(since)}&per_page=50`);
+      const data = await hospGet(`/inquiries?${buildPropertyQs()}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
       tally(parseInquiries(data), inq =>
         inq.property_id || inq.property?.id || inq.properties?.[0]?.id
       );
