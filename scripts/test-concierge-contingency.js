@@ -14,10 +14,9 @@ const CONCIERGE_REGEX = eval('new RegExp(' + m[1] + '\n)');
 // front-desk email contingency (sendConciergeEmail) but did not:
 const SHOULD_FIRE = [
   'Can you send my reservation over to the concierge?',                                   // send reservation → concierge
-  'I need you to send over the reservation to the front desk and get me the entry code',  // send reservation → front desk + entry code
-  'Front desk told me I’m supposed to have a fob up here for getting in and out of the building.', // fob
-  'Hey, Cal. Just arrived. Do you have an entry code for me?',                             // entry-code request
-  'the front desk doesn’t have my reservation',                                            // "doesn't have my reservation" (the original report)
+  'send the reservation over to the front desk',                                          // send reservation → front desk (explicit)
+  'I need you to send over the reservation to the front desk and get me the entry code',  // still fires via send-reservation (NOT via entry-code)
+  'the front desk doesn’t have my reservation',                                            // desk doesn't have it / needs to confirm
 ];
 
 // Control(s): normal guest questions that must NOT trigger the contingency.
@@ -26,6 +25,8 @@ const SHOULD_NOT_FIRE = [
   'what’s the wifi password?',
   'can I check in early at 1pm?',
   'I don’t have my reservation number handy, can you resend it?', // 1st-person, NOT a front-desk problem
+  'Hey, Cal. Just arrived. Do you have an entry code for me?',    // entry-code: must NOT fire (Hospitable handles codes)
+  'Front desk told me I’m supposed to have a fob up here for getting in and out of the building.', // fob: must NOT fire
 ];
 
 let fail = 0;

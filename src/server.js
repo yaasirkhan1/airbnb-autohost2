@@ -854,10 +854,10 @@ const CONCIERGE_REGEX = new RegExp(
   "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:doesn'?t|does\\s+not|didn'?t|did\\s+not|don'?t\\s+have|do\\s+not\\s+have|no\\s+record|can'?t\\s+find|cannot\\s+find|never\\s+(?:got|received)))(?=[\\s\\S]*(?:front\\s+desk|\\bdesk\\b|concierge|reception|lobby|building|\\bthey\\b|system))" +
   // Asking us to send / forward the reservation to the concierge / front desk / building
   "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|over\\s+to))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|building|reception|lobby))" +
-  // Key fob (building access device)
-  "|\\bfob\\b" +
-  // Entry / door / access / gate code requests
-  "|entry\\s+code|door\\s+code|access\\s+code|gate\\s+code|key\\s+code|building\\s+code" +
+  // NOTE: fob / entry-code / door-code phrasings intentionally do NOT trigger the
+  // front-desk contingency — entry codes are handled via Hospitable's Schlage
+  // integration, not by emailing the concierge. Only form / confirm / send-the-
+  // reservation messages fire it.
   // Compound: location word + access-denial word anywhere in the message
   "|(?=[\\s\\S]*(?:desk|lobby|reception))(?=[\\s\\S]*(?:can'?t|unable|no\\s+reservation|won'?t|wont|not\\s+letting))"
   ).replace(/'/g, "['’]"),  // accept straight ' and curly ’ apostrophes (mobile keyboards)
