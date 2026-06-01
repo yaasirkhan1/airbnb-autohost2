@@ -4,6 +4,7 @@ const path         = require('path');
 const fs           = require('fs');
 const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
+const cron         = require('node-cron');
 const vault        = require('./vault');
 
 const app = express();
@@ -2060,6 +2061,221 @@ Rewrite this into completely unique listing copy.`;
   }
 });
 
+// ─── Nightly cleaning schedule ───────────────────────────────────────────────
+
+const CLEANING_UNITS = [
+  { id: '5a8cafc2-baa9-4fdb-b6dc-773bfcfb75bc', label: 'Apt 18-A' },
+  { id: '80c21aac-00eb-49af-9094-6792839ff5a4', label: 'Apt 21-D' },
+  { id: '7b7fda8b-e1d8-460f-8143-59a1a2b4d81c', label: 'Apt 21-I' },
+  { id: '3e702102-a219-4c18-9f88-3a4d1ceb3825', label: 'Apt 24-L' },
+  { id: 'bbe43523-c42a-46b0-8235-7ad08ae990c9', label: 'Apt 4-L'  },
+  { id: '283977a3-3af3-4d90-8d95-b418a3014d90', label: 'Apt 23-N' },
+  { id: '1af8fdde-58ee-426e-8374-6530397347e8', label: 'Apt 7-B'  },
+];
+
+const SPANISH_DAYS   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+const SPANISH_MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+function tomorrowDateString() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+function formatSpanishDate(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  return `${SPANISH_DAYS[d.getUTCDay()]} ${SPANISH_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+// Returns true if the message thread shows BOTH a request AND payment confirmation
+function detectPaidAdjustment(messages, type) {
+  const requestPattern  = type === 'late_checkout'
+    ? /late.{0,20}check.?out|check.?out.{0,20}late|stay.{0,15}later|late\s+departure/i
+    : /early.{0,20}check.?in|check.?in.{0,20}early|arriv.{0,15}early|early\s+arrival/i;
+  const paymentPattern  = /\$45|payment\s+received|paid|resolution\s+center|payment\s+confirmed/i;
+  const approvalPattern = /confirmed|approved|all\s+set|you're\s+good|sounds\s+good|absolutely|of\s+course|no\s+problem|we\s+can\s+accommodate/i;
+
+  let guestRequested = false;
+  let hostApproved   = false;
+  let paymentSeen    = false;
+
+  for (const msg of messages) {
+    const body   = (msg.body || '').trim();
+    const sender = msg.sender_role || msg.sender_type || '';
+    if (!body) continue;
+
+    if (sender === 'guest' && requestPattern.test(body)) guestRequested = true;
+
+    if ((sender === 'host' || sender === 'co-host' || sender === 'teammate') && approvalPattern.test(body)) {
+      if (guestRequested) hostApproved = true;
+    }
+
+    if (paymentPattern.test(body)) paymentSeen = true;
+  }
+
+  return guestRequested && hostApproved && paymentSeen;
+}
+
+async function getReservationMessages(reservationId) {
+  try {
+    const data = await hospGet(`/reservations/${reservationId}/messages?per_page=50`);
+    return parseMessages(data);
+  } catch (e) {
+    console.error(`[cleaning] Could not fetch messages for ${reservationId}: ${e.message}`);
+    return [];
+  }
+}
+
+async function getPropertyReservationsForDate(propertyId, dateStr) {
+  try {
+    const data = await hospGet(
+      `/reservations?properties[]=${propertyId}&status=accepted&per_page=50&include=guest`
+    );
+    const reservations = parseReservations(data);
+    const outgoing = reservations.filter(r => (r.check_out || r.checkout || '').slice(0, 10) === dateStr);
+    const incoming = reservations.filter(r => (r.check_in  || r.checkin  || '').slice(0, 10) === dateStr);
+    return { outgoing, incoming };
+  } catch (e) {
+    console.error(`[cleaning] Reservations lookup for ${propertyId}: ${e.message}`);
+    return { outgoing: [], incoming: [] };
+  }
+}
+
+async function hasCalendarBlockEndingOn(propertyId, dateStr) {
+  try {
+    const data = await hospGet(
+      `/properties/${propertyId}/calendar?start_date=${dateStr}&end_date=${dateStr}`
+    );
+    const days = Array.isArray(data) ? data : (data?.data || data?.days || []);
+    return days.some(d => d.blocked || d.available === false || d.status === 'blocked');
+  } catch (e) {
+    return false;
+  }
+}
+
+async function buildCleaningEntry(unit, tomorrow) {
+  const { outgoing, incoming } = await getPropertyReservationsForDate(unit.id, tomorrow);
+  const calendarBlocked        = await hasCalendarBlockEndingOn(unit.id, tomorrow);
+
+  const needsCleaning = outgoing.length > 0 || calendarBlocked;
+  if (!needsCleaning) return null;
+
+  // --- Vacancy time (when unit becomes available for cleaning) ---
+  let vacancyTime      = '11:00AM';
+  let vacancyConfirmed = false;
+
+  if (outgoing.length > 0) {
+    const msgs = await getReservationMessages(outgoing[0].id);
+    if (detectPaidAdjustment(msgs, 'late_checkout')) {
+      vacancyTime      = '1:30PM';
+      vacancyConfirmed = true;
+    }
+  }
+
+  // --- Deadline (when unit must be ready for next guest) ---
+  let deadlineTime      = null;
+  let deadlineConfirmed = false;
+  const hasSameDayIncoming = incoming.length > 0;
+
+  if (hasSameDayIncoming) {
+    deadlineTime = '4:00PM';
+    const msgs   = await getReservationMessages(incoming[0].id);
+    if (detectPaidAdjustment(msgs, 'early_checkin')) {
+      deadlineTime      = '1:00PM';
+      deadlineConfirmed = true;
+    }
+  }
+
+  return {
+    label:            unit.label,
+    priority:         hasSameDayIncoming,
+    vacancyTime,
+    vacancyConfirmed,
+    deadlineTime,
+    deadlineConfirmed,
+  };
+}
+
+function formatCleaningLine(entry) {
+  const vacPart  = `disponible desde las ${entry.vacancyTime}${entry.vacancyConfirmed ? ' ✅' : ''}`;
+  if (!entry.deadlineTime) return `• ${entry.label} — ${vacPart}`;
+  const deadPart = `lista para las ${entry.deadlineTime}${entry.deadlineConfirmed ? ' ✅' : ''}`;
+  return `• ${entry.label} — ${deadPart}, ${vacPart}`;
+}
+
+async function sendCleaningSchedule() {
+  const tomorrow    = tomorrowDateString();
+  const spanishDate = formatSpanishDate(tomorrow);
+  console.log(`[cleaning] Running schedule for ${tomorrow} (${spanishDate})`);
+
+  const entries = [];
+  for (const unit of CLEANING_UNITS) {
+    const entry = await buildCleaningEntry(unit, tomorrow);
+    if (entry) entries.push(entry);
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  let smsBody;
+  if (entries.length === 0) {
+    smsBody = `🧹 Sin limpiezas — ${spanishDate}\n— Peachtree Tower Rentals`;
+  } else {
+    const priority = entries.filter(e => e.priority);
+    const regular  = entries.filter(e => !e.priority);
+    const lines    = [];
+
+    if (priority.length > 0) {
+      lines.push('⚡ URGENTE (huésped entrante mismo día):');
+      priority.forEach(e => lines.push(formatCleaningLine(e)));
+    }
+    if (regular.length > 0) {
+      if (priority.length > 0) lines.push('');
+      lines.push('Limpieza regular:');
+      regular.forEach(e => lines.push(formatCleaningLine(e)));
+    }
+
+    smsBody = `🧹 Limpieza — ${spanishDate}\n\n${lines.join('\n')}\n\n— Peachtree Tower Rentals`;
+  }
+
+  console.log(`[cleaning] SMS:\n${smsBody}`);
+
+  const apiKey = process.env.QUO_API_KEY;
+  const from   = process.env.QUO_FROM_NUMBER;
+  const to     = '229-573-3899'; // cleaning team
+
+  if (!apiKey || !from) {
+    console.warn('[cleaning] QUO_API_KEY or QUO_FROM_NUMBER not set — SMS not sent');
+    return { ok: false, smsBody, error: 'QUO not configured' };
+  }
+
+  try {
+    const res = await fetch('https://api.openphone.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: [to], from, content: smsBody }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`OpenPhone ${res.status}: ${err}`);
+    }
+    console.log(`[cleaning] ✓ SMS sent to ${to}`);
+    return { ok: true, smsBody, entries: entries.length };
+  } catch (e) {
+    console.error(`[cleaning] SMS failed: ${e.message}`);
+    return { ok: false, smsBody, error: e.message };
+  }
+}
+
+// ─── Test endpoint ────────────────────────────────────────────────────────────
+
+app.post('/api/test-cleaning-schedule', async (req, res) => {
+  try {
+    const result = await sendCleaningSchedule();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
@@ -2071,6 +2287,13 @@ app.listen(PORT, () => {
       console.error('[startup] initAllPropertyProfiles failed:', e.message);
     });
   }, 3000);
+
+  // Nightly cleaning schedule — 9:00 PM Eastern every night
+  cron.schedule('0 21 * * *', () => {
+    console.log('[cleaning] Cron fired — 9:00 PM Eastern');
+    sendCleaningSchedule().catch(e => console.error('[cleaning] Cron error:', e.message));
+  }, { timezone: 'America/New_York' });
+  console.log('[cleaning] Cron scheduled — 9:00 PM Eastern daily');
 });
 
 // Catch unhandled promise rejections so a single async failure can't take
