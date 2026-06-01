@@ -854,7 +854,7 @@ async function getActiveReservation(propertyId) {
   if (!propertyId) return null;
   try {
     const data = await hospGet(
-      `/reservations?properties[]=${propertyId}&status=accepted&per_page=5&include=guest`
+      `/reservations?properties[]=${propertyId}&status[]=accepted&per_page=5&include=guest`
     );
     const reservations = parseReservations(data);
     const today = new Date().toISOString().slice(0, 10);
@@ -2129,14 +2129,24 @@ async function getReservationMessages(reservationId) {
 async function getPropertyReservationsForDate(propertyId, dateStr) {
   try {
     const data = await hospGet(
-      `/reservations?properties[]=${propertyId}&status=accepted&per_page=50&include=guest`
+      `/reservations?properties[]=${propertyId}&status[]=accepted&per_page=50&include=guest`
     );
     const reservations = parseReservations(data);
-    const outgoing = reservations.filter(r => (r.check_out || r.checkout || '').slice(0, 10) === dateStr);
-    const incoming = reservations.filter(r => (r.check_in  || r.checkin  || '').slice(0, 10) === dateStr);
+    // Log all date fields on first reservation to catch field-name drift early
+    if (reservations.length > 0) {
+      const r = reservations[0];
+      console.log(`[cleaning] ${propertyId.slice(0,8)}… sample dates: check_in=${r.check_in} checkin=${r.checkin} start_date=${r.start_date} check_out=${r.check_out} checkout=${r.checkout} end_date=${r.end_date}`);
+    }
+    const outgoing = reservations.filter(r =>
+      (r.check_out || r.checkout || r.check_out_date || r.end_date || r.departure || '').slice(0, 10) === dateStr
+    );
+    const incoming = reservations.filter(r =>
+      (r.check_in  || r.checkin  || r.check_in_date  || r.start_date || r.arrival || '').slice(0, 10) === dateStr
+    );
+    console.log(`[cleaning] ${propertyId.slice(0,8)}… total=${reservations.length} outgoing=${outgoing.length} incoming=${incoming.length} for ${dateStr}`);
     return { outgoing, incoming };
   } catch (e) {
-    console.error(`[cleaning] Reservations lookup for ${propertyId}: ${e.message}`);
+    console.error(`[cleaning] Reservations lookup FAILED for ${propertyId}: ${e.message}`);
     return { outgoing: [], incoming: [] };
   }
 }
@@ -2280,7 +2290,7 @@ app.post('/api/test-cleaning-schedule', async (req, res) => {
 app.get('/api/debug-reservations/:propertyId', async (req, res) => {
   try {
     const raw = await hospGet(
-      `/reservations?properties[]=${req.params.propertyId}&status=accepted&per_page=10&include=guest`
+      `/reservations?properties[]=${req.params.propertyId}&status[]=accepted&per_page=10&include=guest`
     );
     const reservations = parseReservations(raw);
     // Return the first reservation's full key set so we can see the exact field names
