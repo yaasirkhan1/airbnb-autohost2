@@ -346,29 +346,19 @@ async function warmUpSeenMessages() {
     console.warn('[poll] Warm-up: could not fetch reservations:', e.message);
   }
 
-  // ── Inquiries — also warm up so old inquiry messages are not re-processed ───
-  // Pre-booking inquiries are the highest-value messages; we must not miss them
-  // on restart, and we must not double-reply to old ones.
+  // ── Inquiries — mark existing inquiry IDs as seen so we don't re-process on restart ──
+  // NOTE: GET /inquiries/{id}/messages returns 405 (POST-only endpoint).
+  // Inquiry message CONTENT arrives only via webhook (message.created payload).
+  // The poller can only list inquiry IDs; actual message handling is webhook-driven.
   if (!inquiriesUnavailable) {
     try {
       const data = await hospGet(`/inquiries?${buildPropertyQs()}&per_page=50`);
       const inquiries = parseInquiries(data);
-      console.log(`[poll] Warm-up: found ${inquiries.length} inquiries to scan`);
-
+      console.log(`[poll] Warm-up: found ${inquiries.length} inquiries — marking IDs as seen (messages via webhook only)`);
+      // Mark each inquiry ID itself as seen so the poll loop won't try to re-fetch messages.
+      // Message dedup happens at the webhook layer via seenMessageIds.
       for (const inq of inquiries) {
-        try {
-          const msgData = await hospGet(`/inquiries/${inq.id}/messages?per_page=20`);
-          const messages = parseMessages(msgData);
-          for (const m of messages) {
-            if (m.created_at && m.created_at > graceCutoff) {
-              console.log(`[poll] Warm-up: leaving recent inquiry message unseen (${m.created_at})`);
-              continue;
-            }
-            seenMessageIds.add(messageKey(inq.id, m));
-          }
-        } catch (e) {
-          console.warn(`[poll] Warm-up: could not fetch messages for inquiry ${inq.id}: ${e.message}`);
-        }
+        seenMessageIds.add(`inquiry:${inq.id}:warmed`);
       }
     } catch (e) {
       if (e.message.includes('404') || e.message.includes('403')) {
@@ -431,37 +421,26 @@ let inquiryFailCount     = 0;
 const INQUIRY_FAIL_LIMIT = 5;
 
 async function pollInquiryMessages() {
+  // NOTE: GET /inquiries/{id}/messages returns 405 — Hospitable's inquiry messages
+  // endpoint is POST-only. Inquiry message content arrives via webhook only.
+  // This poller only checks for recently-active inquiries to keep seenMessageIds warm
+  // (so the webhook dedup layer recognises them). Actual replies are sent by the
+  // webhook handler when it receives message.created events with inquiry_id set.
   if (inquiriesUnavailable) return;
 
   try {
     const since = toHospitableDate(new Date(Date.now() - 90 * 1000));
-    const qs   = buildPropertyQs();
+    const qs    = buildPropertyQs();
     const data  = await hospGet(`/inquiries?${qs}&last_message_at=${encodeURIComponent(since)}&per_page=50`);
     const inquiries = parseInquiries(data);
 
     inquiryFailCount = 0; // reset on success
 
     if (inquiries.length) {
-      console.log(`[poll/inq] ${inquiries.length} inquir${inquiries.length === 1 ? 'y' : 'ies'} with recent messages`);
+      console.log(`[poll/inq] ${inquiries.length} inquir${inquiries.length === 1 ? 'y' : 'ies'} with recent activity (replies handled via webhook)`);
     }
 
-    for (const inquiry of inquiries) {
-      const propId   = inquiry.property_id
-        || inquiry.property?.id
-        || inquiry.properties?.[0]?.id
-        || null;
-      const propName = inquiry.property?.public_name
-        || inquiry.property?.name
-        || inquiry.properties?.[0]?.public_name
-        || 'your listing';
-      await processNewMessages(
-        inquiry.id,
-        'inquiry',
-        `/inquiries/${inquiry.id}/messages?per_page=10`,
-        propId,
-        propName,
-      );
-    }
+    // No message GET here — would 405. Webhook delivers message body.
   } catch (e) {
     if (e.message.includes('404') || e.message.includes('403')) {
       inquiryFailCount++;
