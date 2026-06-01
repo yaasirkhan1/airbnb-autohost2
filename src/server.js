@@ -832,6 +832,11 @@ const CONCIERGE_REGEX = new RegExp(
   "|check[\\s-]in\\s+form|form\\s+not\\s+sent" +
   "|building\\s+won'?t|building\\s+wont" +
   "|they\\s+need\\s+a\\s+form|front\\s+desk\\s+needs|need\\s+a\\s+form" +
+  // Form never sent / never received — "form" present AND a negation followed (within
+  // ~2 words) by a send/receive verb. Catches "form was never sent", "didn't receive
+  // the form", "never received the form", "you never sent me the form", "front desk
+  // never got my form", "no one sent the form to the building".
+  "|(?=[\\s\\S]*\\bform\\b)(?=[\\s\\S]*\\b(?:never|not|wasn'?t|hasn'?t|haven'?t|didn'?t|did\\s+not|no\\s+one|nobody)\\s+(?:\\w+\\s+){0,2}?(?:sent|send|receiv\\w*|got|get|gotten|gave|give|provided)\\b)" +
   // Compound: location word + access-denial word anywhere in the message
   "|(?=[\\s\\S]*(?:desk|lobby|reception))(?=[\\s\\S]*(?:can'?t|unable|no\\s+reservation|won'?t|wont|not\\s+letting))",
   "i"
@@ -903,28 +908,40 @@ Peachtree Tower Rentals`;
     return;
   }
 
-  if (resendKey) {
-    // Resend HTTP API — works on Railway (no outbound SMTP port required)
-    const resend = new Resend(resendKey);
-    const from   = process.env.RESEND_FROM || `Peachtree Tower Rentals <${gmailUser || 'cal@peachtreestayatl.com'}>`;
-    const result = await resend.emails.send({ from, to, subject, text: body });
-    if (result.error) throw new Error(`Resend error: ${JSON.stringify(result.error)}`);
-    console.log(`[concierge] ✓ Email sent via Resend to ${to} — id=${result.data?.id}`);
-    return;
-  }
+  try {
+    if (resendKey) {
+      // Resend HTTP API — works on Railway (no outbound SMTP port required)
+      const resend = new Resend(resendKey);
+      const from   = process.env.RESEND_FROM || `Peachtree Tower Rentals <${gmailUser || 'cal@peachtreestayatl.com'}>`;
+      const result = await resend.emails.send({ from, to, subject, text: body });
+      if (result.error) throw new Error(`Resend error: ${JSON.stringify(result.error)}`);
+      console.log(`[concierge] ✓ Email sent via Resend to ${to} — id=${result.data?.id}`);
+      return;
+    }
 
-  // Nodemailer SMTP fallback (may be blocked by some hosting providers)
-  const transporter = nodemailer.createTransport({
-    host:              'smtp.gmail.com',
-    port:              465,
-    secure:            true,
-    auth:              { user: gmailUser, pass: gmailPass },
-    connectionTimeout: 10000,
-    greetingTimeout:   10000,
-    socketTimeout:     15000,
-  });
-  await transporter.sendMail({ from: gmailUser, to, subject, text: body });
-  console.log(`[concierge] ✓ Email sent via SMTP to ${to} for ${guestName} in ${unitLabel}`);
+    // Nodemailer SMTP fallback (may be blocked by some hosting providers)
+    const transporter = nodemailer.createTransport({
+      host:              'smtp.gmail.com',
+      port:              465,
+      secure:            true,
+      auth:              { user: gmailUser, pass: gmailPass },
+      connectionTimeout: 10000,
+      greetingTimeout:   10000,
+      socketTimeout:     15000,
+    });
+    await transporter.sendMail({ from: gmailUser, to, subject, text: body });
+    console.log(`[concierge] ✓ Email sent via SMTP to ${to} for ${guestName} in ${unitLabel}`);
+  } catch (e) {
+    // Don't fail silently: if the front-desk email can't be delivered, alert the host
+    // by SMS so a human can call the front desk and authorize access manually.
+    console.error(`[concierge] ✗ Email FAILED to ${to}: ${e.message} — escalating to host SMS`);
+    await notifyHost({
+      guestName,
+      messageBody: `FRONT-DESK EMAIL FAILED for unit ${unitLabel} (${e.message.slice(0, 80)}). Please call the front desk to authorize this guest's access.`,
+      propertyName: unitLabel,
+    });
+    throw e;
+  }
 }
 
 function detectHardcodedResponse(guestName, messageBody) {
