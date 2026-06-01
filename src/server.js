@@ -814,7 +814,38 @@ Cal`;
 
 // ─── Concierge / front-desk access issues ────────────────────────────────────
 
-const CONCIERGE_REGEX = /won'?t\s+let\s+me\s+in|wont\s+let\s+me\s+in|can'?t\s+get\s+in|cant\s+get\s+in|check[\s-]in\s+form|form\s+not\s+sent|building\s+won'?t|building\s+wont|they\s+need\s+a\s+form|front\s+desk\s+needs|need\s+a\s+form|won'?t\s+allow|wont\s+allow|not\s+letting\s+me\s+in|security\s+won'?t\s+let|won'?t\s+buzz\s+me|they\s+won'?t\s+buzz|guard\s+is\s+asking|asking\s+for\s+authorization|can'?t\s+get\s+to\s+my\s+floor|elevator\s+requires\s+a\s+key/i;
+const CONCIERGE_REGEX = new RegExp(
+  // Physical denial / access blocked
+  "won'?t\\s+let\\s+me\\s+in|wont\\s+let\\s+me\\s+in" +
+  "|can'?t\\s+get\\s+in|cant\\s+get\\s+in" +
+  "|they\\s+won'?t\\s+let|they\\s+wont\\s+let" +
+  "|not\\s+letting\\s+me\\b" +
+  "|denied\\s+access|turned\\s+away" +
+  "|said\\s+i\\s+can'?t\\s+come\\s+up|says\\s+i\\s+can'?t\\s+come\\s+up" +
+  "|won'?t\\s+allow|wont\\s+allow" +
+  "|security\\s+won'?t\\s+let" +
+  "|won'?t\\s+buzz\\s+me|they\\s+won'?t\\s+buzz" +
+  "|guard\\s+is\\s+asking|asking\\s+for\\s+authorization" +
+  "|can'?t\\s+get\\s+to\\s+my\\s+floor|elevator\\s+requires\\s+a\\s+key" +
+  // Check-in failure (not followed by "early" or a time to avoid early-checkin collision)
+  "|unable\\s+to\\s+check[\\s-]?in" +
+  "|cannot\\s+check[\\s-]?in" +
+  "|can'?t\\s+check[\\s-]?in(?!\\s*early|\\s+at\\s+\\d|\\s+until|\\s+before)" +
+  // Reservation not found / system issue
+  "|no\\s+reservation|no\\s+booking|no\\s+record\\b" +
+  "|not\\s+in\\s+the\\s+system" +
+  "|doesn'?t\\s+show\\s+up|not\\s+showing\\s+up|not\\s+showing\\s+a\\s+reservation" +
+  "|can'?t\\s+find\\s+my\\s+reservation|cannot\\s+find\\s+my\\s+reservation" +
+  "|don'?t\\s+have\\s+a\\s+reservation|don'?t\\s+see\\s+a?\\s+reservation" +
+  "|don'?t\\s+have\\s+me\\b" +
+  // Form / front desk
+  "|check[\\s-]in\\s+form|form\\s+not\\s+sent" +
+  "|building\\s+won'?t|building\\s+wont" +
+  "|they\\s+need\\s+a\\s+form|front\\s+desk\\s+needs|need\\s+a\\s+form" +
+  // Compound: location word + access-denial word anywhere in the message
+  "|(?=[\\s\\S]*(?:desk|lobby|reception))(?=[\\s\\S]*(?:can'?t|unable|no\\s+reservation|won'?t|wont|not\\s+letting))",
+  "i"
+);
 
 const MAINTENANCE_EMERGENCY_REGEX = /water\s+leak|no\s+hot\s+water|smoke\s+alarm|fire\s+alarm|flood(ing)?|no\s+electricity|power\s+(is\s+)?out/i;
 
