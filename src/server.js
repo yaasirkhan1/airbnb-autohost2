@@ -2289,8 +2289,9 @@ app.post('/api/test-cleaning-schedule', async (req, res) => {
 // Temporary debug endpoint — shows raw reservation fields for a property
 app.get('/api/debug-reservations/:propertyId', async (req, res) => {
   try {
+    // No status filter — fetch all statuses to catch checked_in, confirmed, etc.
     const raw = await hospGet(
-      `/reservations?properties[]=${req.params.propertyId}&status[]=accepted&per_page=10&include=guest`
+      `/reservations?properties[]=${req.params.propertyId}&per_page=20&include=guest`
     );
     const reservations = parseReservations(raw);
     // Return the first reservation's full key set so we can see the exact field names
