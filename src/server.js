@@ -837,6 +837,14 @@ const CONCIERGE_REGEX = new RegExp(
   // the form", "never received the form", "you never sent me the form", "front desk
   // never got my form", "no one sent the form to the building".
   "|(?=[\\s\\S]*\\bform\\b)(?=[\\s\\S]*\\b(?:never|not|wasn'?t|hasn'?t|haven'?t|didn'?t|did\\s+not|no\\s+one|nobody)\\s+(?:\\w+\\s+){0,2}?(?:sent|send|receiv\\w*|got|get|gotten|gave|give|provided)\\b)" +
+  // Front desk / concierge doesn't have (or never received) the reservation
+  "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:doesn['’]?t|does\\s+not|didn['’]?t|did\\s+not|don['’]?t\\s+have|do\\s+not\\s+have|no\\s+record|can['’]?t\\s+find|cannot\\s+find|never\\s+(?:got|received)))(?=[\\s\\S]*(?:front\\s+desk|\\bdesk\\b|concierge|reception|lobby|building|\\bthey\\b|system))" +
+  // Asking us to send / forward the reservation to the concierge / front desk / building
+  "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|over\\s+to))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|building|reception|lobby))" +
+  // Key fob (building access device)
+  "|\\bfob\\b" +
+  // Entry / door / access / gate code requests
+  "|entry\\s+code|door\\s+code|access\\s+code|gate\\s+code|key\\s+code|building\\s+code" +
   // Compound: location word + access-denial word anywhere in the message
   "|(?=[\\s\\S]*(?:desk|lobby|reception))(?=[\\s\\S]*(?:can'?t|unable|no\\s+reservation|won'?t|wont|not\\s+letting))",
   "i"
