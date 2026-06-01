@@ -1265,8 +1265,11 @@ app.post('/webhook/hospitable', (req, res, next) => {
     return;
   }
 
-  // Dedup against poller
-  const dedupKey = `${replyResourceType}:${replyResourceId}:${msg.platform_id || msg.created_at}`;
+  // Dedup against poller — MUST use the exact same key formula as the poller
+  // (messageKey) so a message arriving via BOTH the webhook and the 60s poll is
+  // handled exactly once. (Previously the webhook prefixed the resourceType,
+  // producing a different key → every message was answered twice → 429s.)
+  const dedupKey = messageKey(replyResourceId, msg);
   if (seenMessageIds.has(dedupKey)) {
     console.log('[webhook] Already seen (poller got it first) — skipping');
     return;
