@@ -854,7 +854,7 @@ async function getActiveReservation(propertyId) {
   if (!propertyId) return null;
   try {
     const data = await hospGet(
-      `/reservations?properties[]=${propertyId}&status[]=accepted&per_page=5&include=guest`
+      `/reservations?properties[]=${propertyId}&status[]=accepted&status[]=checked_in&per_page=5&include=guest`
     );
     const reservations = parseReservations(data);
     const today = new Date().toISOString().slice(0, 10);
@@ -2129,7 +2129,7 @@ async function getReservationMessages(reservationId) {
 async function getPropertyReservationsForDate(propertyId, dateStr) {
   try {
     const data = await hospGet(
-      `/reservations?properties[]=${propertyId}&status[]=accepted&per_page=50&include=guest`
+      `/reservations?properties[]=${propertyId}&status[]=accepted&status[]=checked_in&per_page=50&include=guest`
     );
     const reservations = parseReservations(data);
     // Log all date fields on first reservation to catch field-name drift early
