@@ -2126,24 +2126,23 @@ async function getReservationMessages(reservationId) {
   }
 }
 
-async function getPropertyReservationsForDate(propertyId, dateStr) {
+function dateOffset(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Fetch ALL reservations for a property (no status filter) matching a specific date
+async function getReservationsForDate(propertyId, dateStr) {
   try {
     const data = await hospGet(
-      `/reservations?properties[]=${propertyId}&status[]=accepted&status[]=checked_in&per_page=50&include=guest`
+      `/reservations?properties[]=${propertyId}&per_page=50&include=guest`
     );
     const reservations = parseReservations(data);
-    // Log all date fields on first reservation to catch field-name drift early
-    if (reservations.length > 0) {
-      const r = reservations[0];
-      console.log(`[cleaning] ${propertyId.slice(0,8)}… sample dates: check_in=${r.check_in} checkin=${r.checkin} start_date=${r.start_date} check_out=${r.check_out} checkout=${r.checkout} end_date=${r.end_date}`);
-    }
-    const outgoing = reservations.filter(r =>
-      (r.check_out || r.checkout || r.check_out_date || r.end_date || r.departure || '').slice(0, 10) === dateStr
-    );
-    const incoming = reservations.filter(r =>
-      (r.check_in  || r.checkin  || r.check_in_date  || r.start_date || r.arrival || '').slice(0, 10) === dateStr
-    );
-    console.log(`[cleaning] ${propertyId.slice(0,8)}… total=${reservations.length} outgoing=${outgoing.length} incoming=${incoming.length} for ${dateStr}`);
+    const coField = r => (r.check_out || r.checkout || r.check_out_date || r.departure_date || r.end_date || r.departure || '').slice(0, 10);
+    const ciField = r => (r.check_in  || r.checkin  || r.check_in_date  || r.arrival_date  || r.start_date || r.arrival || '').slice(0, 10);
+    const outgoing = reservations.filter(r => coField(r) === dateStr);
+    const incoming = reservations.filter(r => ciField(r) === dateStr);
     return { outgoing, incoming };
   } catch (e) {
     console.error(`[cleaning] Reservations lookup FAILED for ${propertyId}: ${e.message}`);
@@ -2151,29 +2150,49 @@ async function getPropertyReservationsForDate(propertyId, dateStr) {
   }
 }
 
-async function hasCalendarBlockEndingOn(propertyId, dateStr) {
+// PRIMARY detection: calendar-based occupancy check.
+// A cleaning is needed on `targetDate` when:
+//   - The night BEFORE (targetDate - 1) was occupied (available: false)
+//   - targetDate itself is free (available: true)  → guest checked out this morning
+// A same-day incoming guest exists when targetDate is also occupied (available: false).
+async function getCalendarOccupancy(propertyId, targetDate) {
+  const priorDate = dateOffset(targetDate, -1);
   try {
     const data = await hospGet(
-      `/properties/${propertyId}/calendar?start_date=${dateStr}&end_date=${dateStr}`
+      `/properties/${propertyId}/calendar?start_date=${priorDate}&end_date=${targetDate}`
     );
-    const days = Array.isArray(data) ? data : (data?.data || data?.days || []);
-    return days.some(d => d.blocked || d.available === false || d.status === 'blocked');
+    const days = data?.data?.days || data?.days || (Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []));
+    const dayMap = Object.fromEntries(days.map(d => [d.date, d]));
+
+    const priorAvailable  = dayMap[priorDate]?.status?.available;
+    const targetAvailable = dayMap[targetDate]?.status?.available;
+
+    console.log(`[cleaning] ${propertyId.slice(0,8)}… calendar ${priorDate}=${priorAvailable} ${targetDate}=${targetAvailable}`);
+
+    // Prior night occupied AND target date free = checkout/cleaning day
+    const needsCleaning      = priorAvailable === false && targetAvailable !== false;
+    // Prior night occupied AND target date also occupied = back-to-back (checkout + same-day checkin)
+    const hasSameDayIncoming = priorAvailable === false && targetAvailable === false;
+
+    return { needsCleaning: needsCleaning || hasSameDayIncoming, hasSameDayIncoming };
   } catch (e) {
-    return false;
+    console.error(`[cleaning] Calendar lookup FAILED for ${propertyId}: ${e.message}`);
+    return { needsCleaning: false, hasSameDayIncoming: false };
   }
 }
 
 async function buildCleaningEntry(unit, tomorrow) {
-  const { outgoing, incoming } = await getPropertyReservationsForDate(unit.id, tomorrow);
-  const calendarBlocked        = await hasCalendarBlockEndingOn(unit.id, tomorrow);
-
-  const needsCleaning = outgoing.length > 0 || calendarBlocked;
+  // Calendar is the primary signal — reliable regardless of reservation status
+  const { needsCleaning, hasSameDayIncoming } = await getCalendarOccupancy(unit.id, tomorrow);
   if (!needsCleaning) return null;
 
-  // --- Vacancy time (when unit becomes available for cleaning) ---
+  // Try to find the reservation for message-thread analysis (late checkout / early check-in)
+  // No status filter — catches accepted, checked_in, or even cancelled-but-still-blocked
+  const { outgoing, incoming } = await getReservationsForDate(unit.id, tomorrow);
+
+  // --- Vacancy time ---
   let vacancyTime      = '11:00AM';
   let vacancyConfirmed = false;
-
   if (outgoing.length > 0) {
     const msgs = await getReservationMessages(outgoing[0].id);
     if (detectPaidAdjustment(msgs, 'late_checkout')) {
@@ -2182,17 +2201,17 @@ async function buildCleaningEntry(unit, tomorrow) {
     }
   }
 
-  // --- Deadline (when unit must be ready for next guest) ---
+  // --- Deadline ---
   let deadlineTime      = null;
   let deadlineConfirmed = false;
-  const hasSameDayIncoming = incoming.length > 0;
-
   if (hasSameDayIncoming) {
     deadlineTime = '4:00PM';
-    const msgs   = await getReservationMessages(incoming[0].id);
-    if (detectPaidAdjustment(msgs, 'early_checkin')) {
-      deadlineTime      = '1:00PM';
-      deadlineConfirmed = true;
+    if (incoming.length > 0) {
+      const msgs = await getReservationMessages(incoming[0].id);
+      if (detectPaidAdjustment(msgs, 'early_checkin')) {
+        deadlineTime      = '1:00PM';
+        deadlineConfirmed = true;
+      }
     }
   }
 
