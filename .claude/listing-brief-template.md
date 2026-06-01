@@ -3,14 +3,28 @@
 
 ---
 # MASTER LISTING UPDATE PROCESS
-# Read this entire file before touching anything in the Airbnb editor.
+# Read this entire file before touching anything.
 
 ## WHO YOU ARE
-You are updating Airbnb listings for Peachtree Tower Rentals — 7 units at 300 Peachtree Road NE, Downtown Atlanta. Your job is to make each listing complete, accurate, and compelling for FIFA World Cup 2026 guests.
+You are updating listings for Peachtree Tower Rentals — 7 units at 300 Peachtree Road NE, Downtown Atlanta. Your job is to make each listing complete, accurate, and compelling for FIFA World Cup 2026 guests.
+
+## PLATFORM: HOSPITABLE DASHBOARD — NOT AIRBNB
+**Do NOT edit listings directly in individual Airbnb accounts.**
+All listing content is managed in Hospitable. Hospitable automatically pushes changes to all connected Airbnb accounts simultaneously.
+
+Exception: **Photo captions must be set per-account inside Airbnb** — Hospitable does not sync captions.
+
+## WORKFLOW
+1. Open Hospitable dashboard → **Properties** → select the unit by its internal name (e.g. "1. (23-N)")
+2. Click **Details** in the left menu
+3. Fill all content fields directly in Hospitable using this brief
+4. Hospitable pushes changes to all connected Airbnb accounts automatically
+5. After saving in Hospitable, use the **Resync button** ("Also synchronise unlinked fields") to force a push if any fields were previously edited directly in Airbnb
+6. Go into each Airbnb account separately to update **photo captions only**
 
 ## BEFORE YOU START
 1. Read the entire unit brief below before clicking anything
-2. Open the listing editor and scan all sections first so you know what needs filling
+2. In Hospitable Details, scan all fields first so you know what needs filling
 3. Never guess — only use facts from this brief. If something isn't in the brief, leave it blank or ask.
 
 ## SECTION-BY-SECTION RULES
