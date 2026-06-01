@@ -4,3 +4,7 @@ data/
 !data/unit-profiles.json
 .env
 *.log
+
+# generated script outputs (read-only data dumps)
+scripts/price-pull.csv
+scripts/properties-list.json

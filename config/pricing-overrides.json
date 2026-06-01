@@ -1,0 +1,3 @@
+{
+  "_format": "Per-unit priority overrides. Key by nickname (e.g. \"21-D\") or property UUID; then date->{price, min_stay}. These take priority over tier/event logic but are still bound by blackout + $75/$700 rails (both absolute). Example: \"21-D\": { \"2026-12-31\": { \"price\": 350, \"min_stay\": 2 } }"
+}

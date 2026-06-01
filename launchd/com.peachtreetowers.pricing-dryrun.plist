@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.peachtreetowers.pricing-dryrun</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/yasserkhan/airbnb-autohost2/scripts/daily-pricing-dryrun.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/yasserkhan/airbnb-autohost2</string>
+
+    <!-- Run every day at 10:00 AM local time -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>10</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Do NOT run the moment it's loaded; only on the 10:00 schedule -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- launchd's own stdout/stderr (the script also writes a dated log itself) -->
+    <key>StandardOutPath</key>
+    <string>/Users/yasserkhan/airbnb-autohost2/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/yasserkhan/airbnb-autohost2/logs/launchd.err.log</string>
+</dict>
+</plist>

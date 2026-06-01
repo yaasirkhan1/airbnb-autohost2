@@ -1,0 +1,53 @@
+{
+  "version": "2026-06-01-final",
+  "window": { "start": "2026-07-17", "end": "2027-05-31" },
+  "blackout": { "start": "2026-06-11", "end": "2026-07-16", "note": "World Cup — manual, never modify" },
+  "rails": { "floor": 75, "weekend_floor": 99, "ceiling": 700, "manual_only_floor": 50 },
+  "unit_groups": {
+    "older_1br": ["23-N", "7-B"],
+    "updated_1br": ["4-L"],
+    "premium_1br": ["18-A", "24-L", "21-D"],
+    "twobr": ["21-I"]
+  },
+  "tiers": {
+    "emergency_fill": { "older_1br": 75, "updated_1br": 79, "premium_1br": 85, "twobr": 99 },
+    "low":            { "older_1br": 79, "updated_1br": 85, "premium_1br": 92, "twobr": 115 },
+    "normal":         { "older_1br": 85, "updated_1br": 92, "premium_1br": 99, "twobr": 129 },
+    "weekend":        { "older_1br": 99, "updated_1br": 109, "premium_1br": 119, "twobr": 159 },
+    "high":           { "older_1br": 125, "updated_1br": 135, "premium_1br": 149, "twobr": 199 }
+  },
+  "event_overrides": {
+    "dragon_con": { "older_1br": 500, "updated_1br": 500, "premium_1br": 500, "twobr": 688, "min_stay": 5 },
+    "americasmart_big": { "older_1br": 199, "updated_1br": 215, "premium_1br": 235, "twobr": 279, "min_stay": 8 }
+  },
+  "min_stay_by_tier": { "emergency_fill": 1, "low": 1, "normal": 1, "weekend": 2, "high": 2, "compression": 2 },
+  "countdown_rules": {
+    "note": "Never below floor 75; never below weekend_floor 99. Compression: do NOT drop before ~14 days out.",
+    "normal": { "90":"hold","60":"hold;+5% if ahead","30":"drop 1 tier if behind","21":"toward floor","14":"floor, minstay 1-2","7":"floor, minstay 1","3":"floor","1":"floor" },
+    "compression": { "90":"hold","60":"hold","30":"hold","21":"hold","14":"drop 1 tier, relax minstay","7":"toward high tier","3":"emergency logic","1":"floor" }
+  },
+  "events": [
+    { "name": "Atlanta Apparel (Aug)", "venue": "AmericasMart", "start": "2026-08-03", "end": "2026-08-06", "demand": 6, "rule": "high", "min_stay": 2 },
+    { "name": "Falcons preseason vs Broncos", "venue": "Mercedes-Benz", "start": "2026-08-14", "end": "2026-08-14", "demand": 4, "rule": "high_single", "min_stay": 1 },
+    { "name": "Dragon Con", "venue": "Downtown hotels", "start": "2026-09-03", "end": "2026-09-07", "demand": 10, "rule": "override:dragon_con", "min_stay": 5 },
+    { "name": "Aflac Kickoff (Baylor v Auburn)", "venue": "Mercedes-Benz", "start": "2026-09-05", "end": "2026-09-05", "demand": 8, "rule": "covered_by_dragon_con" },
+    { "name": "Falcons home opener vs Panthers", "venue": "Mercedes-Benz", "start": "2026-09-20", "end": "2026-09-20", "demand": 5, "rule": "high_single", "min_stay": 1 },
+    { "name": "Atlanta Apparel (Oct)", "venue": "AmericasMart", "start": "2026-10-06", "end": "2026-10-09", "demand": 6, "rule": "high", "min_stay": 2 },
+    { "name": "Falcons vs Ravens (SNF)", "venue": "Mercedes-Benz", "start": "2026-10-11", "end": "2026-10-11", "demand": 6, "rule": "high", "min_stay": 2 },
+    { "name": "Falcons vs Bears", "venue": "Mercedes-Benz", "start": "2026-10-18", "end": "2026-10-18", "demand": 5, "rule": "high_single", "min_stay": 1 },
+    { "name": "Falcons vs 49ers", "venue": "Mercedes-Benz", "start": "2026-10-25", "end": "2026-10-25", "demand": 5, "rule": "high_single", "min_stay": 1 },
+    { "name": "Falcons vs Chiefs", "venue": "Mercedes-Benz", "start": "2026-11-15", "end": "2026-11-15", "demand": 7, "rule": "high", "min_stay": 2 },
+    { "name": "Thanksgiving week", "venue": "-", "start": "2026-11-25", "end": "2026-11-29", "demand": 2, "rule": "floor", "min_stay": 1 },
+    { "name": "SEC Championship", "venue": "Mercedes-Benz", "start": "2026-12-05", "end": "2026-12-05", "demand": 8, "rule": "high_push", "min_stay": 2 },
+    { "name": "Falcons vs Lions", "venue": "Mercedes-Benz", "start": "2026-12-06", "end": "2026-12-06", "demand": 6, "rule": "high", "min_stay": 2 },
+    { "name": "Christmas week", "venue": "-", "start": "2026-12-21", "end": "2026-12-26", "demand": 2, "rule": "floor", "min_stay": 1 },
+    { "name": "Falcons vs Buccaneers", "venue": "Mercedes-Benz", "start": "2026-12-27", "end": "2026-12-27", "demand": 5, "rule": "high_single", "min_stay": 1, "note": "time TBD" },
+    { "name": "New Year's Eve", "venue": "Downtown", "start": "2026-12-31", "end": "2026-12-31", "demand": 7, "rule": "high", "min_stay": 1 },
+    { "name": "Falcons vs Saints", "venue": "Mercedes-Benz", "start": "2027-01-03", "end": "2027-01-03", "demand": 5, "rule": "high_single", "min_stay": 1 },
+    { "name": "Peach Bowl / CFP", "venue": "Mercedes-Benz", "start": null, "end": null, "demand": 7, "rule": "high", "min_stay": 2, "confirm": "CFP bracket, est late Dec 2026 / early Jan 2027" },
+    { "name": "Atlanta Market Winter (big)", "venue": "AmericasMart", "start": "2027-01-12", "end": "2027-01-18", "demand": 7, "rule": "override:americasmart_big", "min_stay": 8, "confirm": "verify ANDMORE 2027 dates" },
+    { "name": "MLK weekend", "venue": "-", "start": "2027-01-16", "end": "2027-01-18", "demand": 4, "rule": "weekend", "min_stay": 2 },
+    { "name": "Graduation weekends", "venue": "Campuses", "start": null, "end": null, "demand": 7, "rule": "high", "min_stay": 2, "confirm": "early-mid May 2027, verify each university" }
+  ],
+  "manual_check_habit": "30-45 days out: scan State Farm Arena, Mercedes-Benz, Fox, Tabernacle for touring acts; cross-check comps for Dragon Con / SEC Champ / NYE."
+}
