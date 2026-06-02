@@ -9,6 +9,7 @@ const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
+const { fragmentBurst, routeAction } = require('./concierge-window');
 
 const app = express();
 
@@ -62,6 +63,7 @@ const propertyHistory = new Map();   // propertyId -> [{ guest, host, topic }]
 
 // Polling state
 const seenMessageIds = new Set(); // dedup between webhook + polling
+const recentMsgsByConvo = new Map(); // conversation_id → recent guest msgs (for fragment-burst detection, incl. booking-less)
 let knownPropertyIds  = [];       // populated after initAllPropertyProfiles
 let pollingSince      = null;     // ISO timestamp — only reply to messages after this
 
@@ -494,8 +496,9 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       console.log(`[poll/${tag}] 📨 "${guestName}" property="${propertyName}" (${resourceId}): "${body.slice(0, 80)}"`);
       console.log(`[poll/${tag}] using profile: ${propertyProfiles.has(propertyId)}`);
 
-      // Concierge/front-desk email side-effect — fires before reply drafting
-      if (CONCIERGE_REGEX.test(body)) {
+      // Concierge/front-desk email side-effect — this message OR a tight burst
+      // of recent short fragments in the thread.
+      if (CONCIERGE_REGEX.test(body) || CONCIERGE_REGEX.test(fragmentBurst(messages))) {
         sendConciergeEmail({ guestName, propertyId, resourceId, resourceType })
           .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
       }
@@ -854,8 +857,10 @@ const CONCIERGE_REGEX = new RegExp(
   "|(?=[\\s\\S]*\\bform\\b)(?=[\\s\\S]*\\b(?:never|not|wasn'?t|hasn'?t|haven'?t|didn'?t|did\\s+not|no\\s+one|nobody)\\s+(?:\\w+\\s+){0,2}?(?:sent|send|receiv\\w*|got|get|gotten|gave|give|provided)\\b)" +
   // Front desk / concierge doesn't have (or never received) the reservation
   "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:doesn'?t|does\\s+not|didn'?t|did\\s+not|don'?t\\s+have|do\\s+not\\s+have|no\\s+record|can'?t\\s+find|cannot\\s+find|never\\s+(?:got|received)))(?=[\\s\\S]*(?:front\\s+desk|\\bdesk\\b|concierge|reception|lobby|building|\\bthey\\b|system))" +
-  // Asking us to send / forward the reservation to the concierge / front desk / building
-  "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|over\\s+to))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|building|reception|lobby))" +
+  // Send / forward (or "did you send?") my reservation/info/form to the concierge
+  // / front desk / building. Broadened beyond the literal word "reservation" and
+  // works for both commands and status-questions (lookahead-only, grammar-agnostic).
+  "|(?=[\\s\\S]*\\b(?:reservation|reservations|info|information|informations|form|details|paperwork|registration|booking)\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|forwarded|over\\s+to|pass(?:ed)?\\s+(?:on|along)))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|building|reception|lobby))" +
   // NOTE: fob / entry-code / door-code phrasings intentionally do NOT trigger the
   // front-desk contingency — entry codes are handled via Hospitable's Schlage
   // integration, not by emailing the concierge. Only form / confirm / send-the-
@@ -1306,6 +1311,20 @@ app.post('/webhook/hospitable', (req, res, next) => {
 
   if (!messageBody) { console.log('[webhook] empty body — ignoring'); return; }
 
+  // Buffer recent guest messages per conversation so a request split across
+  // short messages is caught as a tight burst — even with NO booking attached.
+  if (conversationId) {
+    const buf = recentMsgsByConvo.get(conversationId) || [];
+    buf.push({ body: messageBody, sender_role: 'guest', created_at: msg.created_at || new Date().toISOString() });
+    while (buf.length > 8) buf.shift();
+    recentMsgsByConvo.set(conversationId, buf);
+    if (recentMsgsByConvo.size > 500) recentMsgsByConvo.delete(recentMsgsByConvo.keys().next().value);
+  }
+  // Front-desk contingency match: this message alone, OR a tight burst of recent
+  // short fragments in the same conversation.
+  const conciergeBurst = conversationId ? fragmentBurst(recentMsgsByConvo.get(conversationId) || []) : '';
+  const conciergeHit = CONCIERGE_REGEX.test(messageBody) || (!!conciergeBurst && CONCIERGE_REGEX.test(conciergeBurst));
+
   // Determine the resource ID to use for sending the reply.
   // Reservations  → POST /reservations/{id}/messages
   // Inquiries     → POST /inquiries/{id}/messages  (Hospitable added Sept 2024)
@@ -1313,7 +1332,13 @@ app.post('/webhook/hospitable', (req, res, next) => {
   const replyResourceId   = reservationId || inquiryId || null;
   const replyResourceType = reservationId ? 'reservation' : inquiryId ? 'inquiry' : null;
 
-  if (!replyResourceId) {
+  const action = routeAction({ hasBooking: !!replyResourceId, conciergeHit });
+  if (action === 'escalate') {
+    console.warn('[webhook] Front-desk request with NO reservation/inquiry — escalating to host by SMS (cannot auto-reply).');
+    notifyHost({ guestName, messageBody, propertyName: 'UNKNOWN UNIT (no reservation linked)' }).catch(console.error);
+    return;
+  }
+  if (action === 'drop') {
     console.warn('[webhook] No reservation_id or inquiry_id — cannot send reply. Full payload logged above.');
     return;
   }
@@ -1355,8 +1380,9 @@ app.post('/webhook/hospitable', (req, res, next) => {
     learnPropertyProfile(propertyId, propertyName).catch(console.error);
   }
 
-  // Concierge/front-desk email side-effect
-  if (CONCIERGE_REGEX.test(messageBody)) {
+  // Concierge/front-desk email side-effect — fires on this message OR a tight
+  // burst of recent short fragments (conciergeHit computed above).
+  if (conciergeHit) {
     sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType })
       .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
   }
