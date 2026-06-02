@@ -8,6 +8,7 @@ const cron         = require('node-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen } = require('./seen-store');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
+const { tomorrowInTZ, needsCleaning: needsCleaningCheck } = require('./cleaning-schedule');
 
 const app = express();
 
@@ -2130,9 +2131,10 @@ const SPANISH_DAYS   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Vierne
 const SPANISH_MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
 function tomorrowDateString() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  // "Tomorrow" in the cron's timezone (America/New_York), NOT UTC. At 9PM ET the
+  // UTC date has already rolled to the next day, so the old toISOString() logic
+  // targeted a day too far ahead. See src/cleaning-schedule.js.
+  return tomorrowInTZ(new Date(), 'America/New_York');
 }
 
 function formatSpanishDate(dateStr) {
@@ -2234,9 +2236,7 @@ async function getCalendarOccupancy(propertyId, targetDate) {
     console.log(`[cleaning] ${propertyId.slice(0,8)}… calendar prior(${priorDate}): reason=${priorReason} avail=${priorDay?.status?.available} | target(${targetDate}): reason=${targetDay?.status?.reason} avail=${targetAvailable}`);
 
     // Only flag cleaning if prior night had an actual RESERVATION (not a manual USER block)
-    const needsCleaning = priorReason === 'RESERVED' && targetAvailable !== false;
-
-    return { needsCleaning };
+    return { needsCleaning: needsCleaningCheck(priorDay, targetDay) };
   } catch (e) {
     console.error(`[cleaning] Calendar lookup FAILED for ${propertyId}: ${e.message}`);
     return { needsCleaning: false };
