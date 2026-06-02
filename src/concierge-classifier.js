@@ -12,6 +12,13 @@
 //      result. A classifier error can therefore never do worse than today's
 //      regex-only behavior, and never silently drops a guest.
 //
+// Safety:
+//   - Kill switch: env CONCIERGE_AI=false instantly reverts to regex-only, no
+//     redeploy. (Any value other than the literal string "false" = AI enabled.)
+//   - decideConcierge() NEVER throws and ALWAYS resolves within timeoutMs — so
+//     a caller can run it without ever blocking, delaying, or crashing the
+//     guest-reply path.
+//
 // No side effects on require — Claude is injected, so this is unit-testable
 // offline. server.js passes its real callClaude().
 
@@ -48,22 +55,46 @@ function withTimeout(promise, ms) {
   });
 }
 
-// Returns true if the message should fire the front-desk contingency.
-//   text       — the guest text to classify (single message, or joined recents)
+// Core decision. NEVER throws; ALWAYS resolves (within ~timeoutMs) to a record:
+//   { regexHit, aiEnabled, aiConsulted, rawVerdict, fired, source }
+//   source ∈ regex-fast-path | kill-switch | no-callClaude | ai | ai-fallback
+//
+// Inputs:
+//   text       — guest text to classify (single message, or joined recents)
 //   regexHit   — whether CONCIERGE_REGEX already matched (fast-path + fallback)
 //   callClaude — async (systemPrompt, userMsg, maxTokens) => string
-//   timeoutMs  — hard budget for the AI call (default 4s)
-//   log        — optional (err) => void for fallback logging
-async function classifyConcierge(text, { regexHit = false, callClaude, timeoutMs = 4000, log } = {}) {
-  if (regexHit) return true;                 // fast-path: trust the regex
-  if (typeof callClaude !== 'function') return regexHit;
+//   env        — environment for the kill switch (default process.env)
+//   timeoutMs  — hard budget for the AI call (default 4000)
+async function decideConcierge({ text, regexHit = false, callClaude, env = process.env, timeoutMs = 4000 } = {}) {
+  const aiEnabled = (env && env.CONCIERGE_AI) !== 'false';
+
+  // 1. fast-path: trust the regex, spend no AI call.
+  if (regexHit) {
+    return { regexHit: true, aiEnabled, aiConsulted: false, rawVerdict: null, fired: true, source: 'regex-fast-path' };
+  }
+  // kill switch: AI disabled → regex-only behavior.
+  if (!aiEnabled) {
+    return { regexHit: false, aiEnabled, aiConsulted: false, rawVerdict: null, fired: false, source: 'kill-switch' };
+  }
+  if (typeof callClaude !== 'function') {
+    return { regexHit: false, aiEnabled, aiConsulted: false, rawVerdict: null, fired: regexHit, source: 'no-callClaude' };
+  }
+  // 2. AI path.
   try {
-    const verdict = await withTimeout(callClaude(CLASSIFIER_SYSTEM_PROMPT, String(text || ''), 5), timeoutMs);
-    return parseVerdict(verdict);
+    const rawVerdict = await withTimeout(callClaude(CLASSIFIER_SYSTEM_PROMPT, String(text || ''), 5), timeoutMs);
+    return { regexHit: false, aiEnabled, aiConsulted: true, rawVerdict, fired: parseVerdict(rawVerdict), source: 'ai' };
   } catch (e) {
-    if (log) log(e);
-    return regexHit;                         // fallback: never worse than regex-only
+    // 3. fallback: never worse than regex-only (regexHit is false here → silent).
+    return { regexHit: false, aiEnabled, aiConsulted: true, rawVerdict: `ERROR:${e.message}`, fired: regexHit, source: 'ai-fallback' };
   }
 }
 
-module.exports = { classifyConcierge, parseVerdict, withTimeout, CLASSIFIER_SYSTEM_PROMPT };
+// Thin boolean wrapper kept for callers/tests that only want the decision.
+async function classifyConcierge(text, opts = {}) {
+  const { regexHit = false, callClaude, timeoutMs = 4000, log } = opts;
+  const rec = await decideConcierge({ text, regexHit, callClaude, timeoutMs, env: process.env });
+  if (log && rec.source === 'ai-fallback') log(new Error(rec.rawVerdict));
+  return rec.fired;
+}
+
+module.exports = { decideConcierge, classifyConcierge, parseVerdict, withTimeout, CLASSIFIER_SYSTEM_PROMPT };

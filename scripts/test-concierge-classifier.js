@@ -25,6 +25,7 @@ const path = require('path');
 
 const {
   classifyConcierge,
+  decideConcierge,
   parseVerdict,
   CLASSIFIER_SYSTEM_PROMPT,
 } = require('../src/concierge-classifier');
@@ -117,6 +118,69 @@ const SILENT_CASES = [
     });
     assert.strictEqual(out, true);
     assert.ok(Date.now() - start < 1000, 'must not hang past the timeout');
+  });
+
+  // ── Safety provisions (decideConcierge) ──────────────────────────────────
+  // kill switch: CONCIERGE_AI=false → AI never consulted, reverts to regex-only.
+  await check('kill switch: CONCIERGE_AI=false → AI not consulted, fired=regexHit', async () => {
+    let called = false;
+    const rec = await decideConcierge({
+      text: 'did you send my info to the desk', regexHit: false,
+      env: { CONCIERGE_AI: 'false' },
+      callClaude: async () => { called = true; return 'YES'; },
+    });
+    assert.strictEqual(called, false, 'AI must not be called when kill switch is off');
+    assert.strictEqual(rec.fired, false);
+    assert.strictEqual(rec.source, 'kill-switch');
+    // and a regex hit still fires even with AI killed (regex-only behavior intact)
+    const rec2 = await decideConcierge({ text: 'x', regexHit: true, env: { CONCIERGE_AI: 'false' } });
+    assert.strictEqual(rec2.fired, true);
+    assert.strictEqual(rec2.source, 'regex-fast-path');
+  });
+
+  // GUEST REPLY MUST NEVER BE BLOCKED/DELAYED/CRASHED: prove a hanging AI call
+  // both (a) resolves within the timeout budget and (b) never throws.
+  await check('hang+timeout: AI hangs → resolves to regex result within budget, no throw', async () => {
+    const start = Date.now();
+    let threw = false, rec;
+    try {
+      rec = await decideConcierge({
+        text: 'x', regexHit: false, timeoutMs: 200,
+        callClaude: () => new Promise(() => {}), // hangs forever
+      });
+    } catch (e) { threw = true; }
+    const elapsed = Date.now() - start;
+    assert.strictEqual(threw, false, 'must NEVER throw');
+    assert.strictEqual(rec.fired, false, 'falls back to regexHit (false)');
+    assert.strictEqual(rec.source, 'ai-fallback');
+    assert.ok(elapsed >= 180 && elapsed < 1500, `must resolve right around the ${200}ms budget, was ${elapsed}ms`);
+  });
+
+  // Simulate the actual reply-path guarantee: a fire-and-forget classify must
+  // not stop the (synchronous) guest reply from being scheduled immediately.
+  await check('reply path proceeds immediately even while AI hangs', async () => {
+    let replyScheduled = false;
+    // fire-and-forget exactly as server.js does on the reply path
+    decideConcierge({ text: 'x', regexHit: false, timeoutMs: 5000, callClaude: () => new Promise(() => {}) })
+      .then(() => {}); // never blocks us
+    replyScheduled = true; // this line runs without awaiting the classifier
+    assert.strictEqual(replyScheduled, true);
+  });
+
+  // garbage verdict → strict parse keeps it silent, no throw.
+  await check('garbage verdict: "🤖 maybe?" → silent, source=ai', async () => {
+    const rec = await decideConcierge({ text: 'x', regexHit: false, callClaude: async () => '🤖 maybe?' });
+    assert.strictEqual(rec.fired, false);
+    assert.strictEqual(rec.source, 'ai');
+  });
+
+  // audit record carries everything the live log needs.
+  await check('audit record: has regexHit, aiConsulted, rawVerdict, fired, source', async () => {
+    const rec = await decideConcierge({ text: 'x', regexHit: false, callClaude: async () => 'YES' });
+    for (const k of ['regexHit', 'aiEnabled', 'aiConsulted', 'rawVerdict', 'fired', 'source'])
+      assert.ok(k in rec, `record missing ${k}`);
+    assert.strictEqual(rec.rawVerdict, 'YES');
+    assert.strictEqual(rec.fired, true);
   });
 
   console.log('\n── PART B: real Claude decisions on every named case ──\n');

@@ -10,6 +10,7 @@ const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
+const { decideConcierge } = require('./concierge-classifier');
 
 const app = express();
 
@@ -497,10 +498,21 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       console.log(`[poll/${tag}] using profile: ${propertyProfiles.has(propertyId)}`);
 
       // Concierge/front-desk email side-effect — this message OR a tight burst
-      // of recent short fragments in the thread.
-      if (CONCIERGE_REGEX.test(body) || CONCIERGE_REGEX.test(fragmentBurst(messages))) {
-        sendConciergeEmail({ guestName, propertyId, resourceId, resourceType })
-          .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
+      // of recent short fragments. Regex fast-path fires instantly; on a regex
+      // miss the AI classifier is consulted. Run as a NON-BLOCKING side-effect so
+      // it can never block, delay, or crash the guest reply below.
+      {
+        const burst = fragmentBurst(messages);
+        const regexHit = CONCIERGE_REGEX.test(body) || (!!burst && CONCIERGE_REGEX.test(burst));
+        const conciergeText = (burst && burst.length > body.length) ? burst : body;
+        decideConciergeHit(conciergeText, regexHit, `poll/${tag}`)
+          .then(hit => {
+            if (hit) {
+              sendConciergeEmail({ guestName, propertyId, resourceId, resourceType })
+                .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
+            }
+          })
+          .catch(e => console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`));
       }
 
       // Maintenance emergency SMS side-effect — notify host immediately
@@ -718,6 +730,20 @@ async function callClaude(systemPrompt, userMsg, maxTokens = 800) {
   }
   const data = await response.json();
   return data.content?.[0]?.text || '';
+}
+
+// Front-desk contingency decision: regex fast-path → AI on regex-miss → regex
+// fallback on ANY error/timeout. NEVER throws and ALWAYS resolves within ~4s, so
+// callers can fire-and-forget it OFF the guest-reply path (it can't block, delay,
+// or crash a reply). Kill switch: env CONCIERGE_AI=false reverts to regex-only.
+// Logs every decision for live audit.
+async function decideConciergeHit(text, regexHit, context = '') {
+  const rec = await decideConcierge({ text, regexHit, callClaude, env: process.env, timeoutMs: 4000 });
+  const ai = rec.aiConsulted
+    ? (rec.source === 'ai-fallback' ? `FALLBACK(${rec.rawVerdict})` : (rec.fired ? 'YES' : 'no'))
+    : 'n/a';
+  console.log(`[concierge-ai] ${context} regexHit=${rec.regexHit ? 'Y' : 'N'} ai=${ai} source=${rec.source} FIRED=${rec.fired ? 'YES' : 'no'} | "${String(text || '').slice(0, 140)}"`);
+  return rec.fired;
 }
 
 // ─── Host notifications ───────────────────────────────────────────────────────
@@ -1321,9 +1347,11 @@ app.post('/webhook/hospitable', (req, res, next) => {
     if (recentMsgsByConvo.size > 500) recentMsgsByConvo.delete(recentMsgsByConvo.keys().next().value);
   }
   // Front-desk contingency match: this message alone, OR a tight burst of recent
-  // short fragments in the same conversation.
-  const conciergeBurst = conversationId ? fragmentBurst(recentMsgsByConvo.get(conversationId) || []) : '';
-  const conciergeHit = CONCIERGE_REGEX.test(messageBody) || (!!conciergeBurst && CONCIERGE_REGEX.test(conciergeBurst));
+  // short fragments in the same conversation. regexHit drives the fast-path; the
+  // AI classifier (decideConciergeHit) is consulted only on a regex miss.
+  const conciergeBurst    = conversationId ? fragmentBurst(recentMsgsByConvo.get(conversationId) || []) : '';
+  const conciergeRegexHit = CONCIERGE_REGEX.test(messageBody) || (!!conciergeBurst && CONCIERGE_REGEX.test(conciergeBurst));
+  const conciergeText     = (conciergeBurst && conciergeBurst.length > messageBody.length) ? conciergeBurst : messageBody;
 
   // Determine the resource ID to use for sending the reply.
   // Reservations  → POST /reservations/{id}/messages
@@ -1332,13 +1360,16 @@ app.post('/webhook/hospitable', (req, res, next) => {
   const replyResourceId   = reservationId || inquiryId || null;
   const replyResourceType = reservationId ? 'reservation' : inquiryId ? 'inquiry' : null;
 
-  const action = routeAction({ hasBooking: !!replyResourceId, conciergeHit });
-  if (action === 'escalate') {
-    console.warn('[webhook] Front-desk request with NO reservation/inquiry — escalating to host by SMS (cannot auto-reply).');
-    notifyHost({ guestName, messageBody, propertyName: 'UNKNOWN UNIT (no reservation linked)' }).catch(console.error);
-    return;
-  }
-  if (action === 'drop') {
+  // No booking → we cannot auto-reply. There is no guest reply to delay here, so
+  // we await the classifier to decide escalate (front-desk request → SMS host)
+  // vs drop. decideConciergeHit never throws and is bounded to ~4s.
+  if (!replyResourceId) {
+    const conciergeHit = await decideConciergeHit(conciergeText, conciergeRegexHit, 'webhook/no-booking');
+    if (routeAction({ hasBooking: false, conciergeHit }) === 'escalate') {
+      console.warn('[webhook] Front-desk request with NO reservation/inquiry — escalating to host by SMS (cannot auto-reply).');
+      notifyHost({ guestName, messageBody, propertyName: 'UNKNOWN UNIT (no reservation linked)' }).catch(console.error);
+      return;
+    }
     console.warn('[webhook] No reservation_id or inquiry_id — cannot send reply. Full payload logged above.');
     return;
   }
@@ -1381,11 +1412,17 @@ app.post('/webhook/hospitable', (req, res, next) => {
   }
 
   // Concierge/front-desk email side-effect — fires on this message OR a tight
-  // burst of recent short fragments (conciergeHit computed above).
-  if (conciergeHit) {
-    sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType })
-      .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
-  }
+  // burst of recent short fragments. Regex fast-path fires instantly; AI on a
+  // regex miss. Run NON-BLOCKING so it can never block, delay, or crash the guest
+  // reply below — the reply path proceeds immediately regardless of the AI call.
+  decideConciergeHit(conciergeText, conciergeRegexHit, 'webhook')
+    .then(hit => {
+      if (hit) {
+        sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType })
+          .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
+      }
+    })
+    .catch(e => console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`));
 
   try {
     const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId);
