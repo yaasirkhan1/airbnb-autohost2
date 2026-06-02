@@ -7,6 +7,7 @@ const { Resend }   = require('resend');
 const cron         = require('node-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
+const { savePending, loadPending, partitionPending } = require('./pending-store');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
@@ -1484,27 +1485,47 @@ function scheduleReply(resourceId, guestName, originalMessage, draftedReply, pro
     usedProfile: propertyProfiles.has(propertyId),
   };
 
-  const timer = setTimeout(async () => {
-    const current = pendingReplies.get(id);
-    if (!current || current.status !== 'pending') return;
-    current.status = 'sending';
-    try {
-      await sendToHospitable(current.resourceId, current.editedReply, current.resourceType);
-      current.status = 'sent';
-      console.log(`[scheduler] ✓ Sent reply to ${current.guestName} via ${current.resourceType} ${current.resourceId}`);
-    } catch (err) {
-      current.status = 'failed';
-      current.error = err.message;
-      console.error(`[scheduler] ✗ Failed to send to ${current.guestName}: ${err.message}`);
-    }
-    replyLog.unshift({ ...current });
-    if (replyLog.length > 100) replyLog.pop();
-    pendingReplies.delete(id);
-  }, delayMs);
-
-  entry.timer = timer;
+  entry.timer = setTimeout(() => dispatchPendingReply(id), delayMs);
   pendingReplies.set(id, entry);
+  savePending(pendingReplies); // persist so a queued reply survives a restart
   console.log(`[scheduler] Reply queued for ${guestName} — sends in ${HOST_SETTINGS.delayMinutes}min`);
+}
+
+// Send one queued reply, record it, and remove it from the queue (then persist
+// the removal). Shared by the scheduled timer and the boot re-enqueue.
+async function dispatchPendingReply(id) {
+  const current = pendingReplies.get(id);
+  if (!current || current.status !== 'pending') return;
+  current.status = 'sending';
+  try {
+    await sendToHospitable(current.resourceId, current.editedReply, current.resourceType);
+    current.status = 'sent';
+    console.log(`[scheduler] ✓ Sent reply to ${current.guestName} via ${current.resourceType} ${current.resourceId}`);
+  } catch (err) {
+    current.status = 'failed';
+    current.error = err.message;
+    console.error(`[scheduler] ✗ Failed to send to ${current.guestName}: ${err.message}`);
+  }
+  replyLog.unshift({ ...current });
+  if (replyLog.length > 100) replyLog.pop();
+  pendingReplies.delete(id);
+  savePending(pendingReplies);
+}
+
+// Deploy-churn fix: on boot, restore queued replies from disk so one caught mid-delay
+// during a restart is still sent. Overdue → dispatch immediately; upcoming → re-arm
+// a timer for the remaining delay.
+function restorePendingReplies() {
+  const entries = loadPending();
+  if (!entries.length) return;
+  const { overdue, upcoming } = partitionPending(entries, Date.now());
+  for (const e of [...overdue, ...upcoming]) { e.timer = undefined; pendingReplies.set(e.id, e); }
+  for (const e of upcoming) {
+    const delay = Math.max(0, e.sendAt - Date.now());
+    e.timer = setTimeout(() => dispatchPendingReply(e.id), delay);
+  }
+  for (const e of overdue) setImmediate(() => dispatchPendingReply(e.id));
+  console.log(`[scheduler] Restored ${upcoming.length} scheduled + ${overdue.length} overdue pending replies from disk`);
 }
 
 async function sendToHospitable(resourceId, body, resourceType = 'reservation') {
@@ -1562,6 +1583,7 @@ app.post('/api/cancel/:id', (req, res) => {
   replyLog.unshift({ ...entry });
   if (replyLog.length > 100) replyLog.pop();
   pendingReplies.delete(req.params.id);
+  savePending(pendingReplies);
   res.json({ ok: true });
 });
 
@@ -1571,6 +1593,7 @@ app.post('/api/edit/:id', (req, res) => {
   const { reply } = req.body;
   if (!reply) return res.status(400).json({ error: 'reply required' });
   entry.editedReply = reply;
+  savePending(pendingReplies); // persist the edit so it survives a restart
   res.json({ ok: true });
 });
 
@@ -1585,6 +1608,7 @@ app.post('/api/send-now/:id', async (req, res) => {
     replyLog.unshift({ ...entry });
     if (replyLog.length > 100) replyLog.pop();
     pendingReplies.delete(entry.id);
+    savePending(pendingReplies);
     res.json({ ok: true });
   } catch (err) {
     entry.status = 'failed';
@@ -2525,6 +2549,15 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`\n🏠 Airbnb AutoHost running on port ${PORT}`);
   console.log(`   Host: ${HOST_SETTINGS.name} | Delay: ${HOST_SETTINGS.delayMinutes}min\n`);
+  // Startup diagnostic: prove the volume split — seen/pending persist to STATE_DIR
+  // (the volume), while static config still loads from the repo (DATA_DIR unset).
+  try {
+    const stateDir = process.env.STATE_DIR || process.env.DATA_DIR || '(repo ./data)';
+    const mapCount = Object.keys(loadPropertiesMap()).length;
+    let codeCount = 0; try { codeCount = Object.keys(loadEntryCodes()).length; } catch (_) {}
+    console.log(`[startup] STATE_DIR(volume)=${stateDir} | properties-map=${mapCount} units | entry-codes=${codeCount} units`);
+  } catch (e) { console.warn('[startup] diagnostic failed:', e.message); }
+  restorePendingReplies(); // deploy-churn fix: re-send/re-arm queued replies persisted before the restart
   setTimeout(() => {
     initAllPropertyProfiles().catch(e => {
       console.error('[startup] initAllPropertyProfiles failed:', e.message);

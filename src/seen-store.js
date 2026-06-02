@@ -3,8 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 
+// STATE_DIR (a Railway volume in prod) holds mutable runtime state that must
+// survive restarts. Falls back to DATA_DIR, then the repo ./data, for back-compat.
 const DEFAULT_FILE = path.join(
-  process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
+  process.env.STATE_DIR || process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
   'seen-messages.json'
 );
 
