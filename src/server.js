@@ -7,6 +7,7 @@ const { Resend }   = require('resend');
 const cron         = require('node-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen } = require('./seen-store');
+const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 
 const app = express();
 
@@ -1069,6 +1070,20 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
 }
 
 async function draftReply(guestName, messageBody, propertyName, propertyId) {
+  // Entry/door code request → reply with THIS unit's emergency code (if set).
+  // reservation propertyId → properties-map label (unit) → config/entry-codes.json.
+  // If we can't safely resolve a code (unknown unit / no code set), escalate to
+  // the host (confident:false) rather than guess or send a blank/wrong code.
+  if (isEntryCodeRequest(messageBody)) {
+    const resolved = resolveEntryCode(propertyId, loadPropertiesMap(), loadEntryCodes());
+    if (resolved) {
+      console.log(`[entry-code] Sending code for unit ${resolved.unit} (property ${propertyId})`);
+      return { confident: true, reply: entryCodeReply(guestName, resolved.unit, resolved.code) };
+    }
+    console.log(`[entry-code] Code requested but unresolved (property ${propertyId}) — escalating to host`);
+    return { confident: false, reply: '' };
+  }
+
   // Short-circuit for common questions with exact hardcoded answers
   const hardcoded = detectHardcodedResponse(guestName, messageBody);
   if (hardcoded) {

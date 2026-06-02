@@ -1,0 +1,10 @@
+{
+  "_format": "Permanent emergency Schlage entry code per unit. Enter the code you set on each lock as a string. Leave \"\" for any unit with no code yet (the responder will escalate to host instead of sending a blank). Keyed by unit nickname.",
+  "4-L": "",
+  "7-B": "",
+  "18-A": "",
+  "21-D": "",
+  "21-I": "",
+  "23-N": "",
+  "24-L": ""
+}

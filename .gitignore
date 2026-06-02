@@ -8,3 +8,6 @@ data/
 # generated script outputs (read-only data dumps)
 scripts/price-pull.csv
 scripts/properties-list.json
+
+# real door codes — never commit (use ENTRY_CODES_JSON env on Railway)
+config/entry-codes.json
