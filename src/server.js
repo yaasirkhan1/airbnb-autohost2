@@ -12,6 +12,7 @@ const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = requ
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms } = require('./concierge-email');
+const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-properties');
 
 const app = express();
 
@@ -277,9 +278,13 @@ async function initAllPropertyProfiles() {
   try {
     console.log('[learn] Fetching all properties...');
     const data = await hospGet('/properties?per_page=50');
-    const properties = parseProperties(data);
+    const allProperties = parseProperties(data);
+    // Scope to the 7 managed Atlanta units by STABLE ID (titles change — e.g. the
+    // "World Cup…" renames — so we never match on name). Everything downstream
+    // (poll, inquiries, warm-up, webhook) flows from knownPropertyIds.
+    const properties = filterManaged(allProperties);
     knownPropertyIds = properties.map(p => p.id);
-    console.log(`[learn] Found ${properties.length} properties — building profiles...`);
+    console.log(`[learn] ${allProperties.length} properties on account → scoped to ${knownPropertyIds.length} managed (Atlanta); building profiles...`);
     for (const p of properties) {
       const id = p.id;
       const name = p.public_name || p.name || id;
@@ -1416,6 +1421,15 @@ app.post('/webhook/hospitable', (req, res, next) => {
     } catch (e) {
       console.warn(`[webhook] Could not fetch reservation for property info: ${e.message}`);
     }
+  }
+
+  // Scope guard (mirrors the poller): once we know the property, drop anything that
+  // isn't one of the 7 managed Atlanta units (San Juan / Unnamed / etc.) — matched by
+  // STABLE ID, so the "World Cup…" renames are irrelevant. Inquiries with no resolvable
+  // property fall through; the inquiry poller is itself scoped to the managed IDs.
+  if (propertyId && !isManaged(propertyId)) {
+    console.log(`[webhook] property ${propertyId} ("${propertyName}") is NOT a managed Atlanta unit — dropping.`);
+    return;
   }
 
   if (propertyId && !propertyProfiles.has(propertyId)) {
