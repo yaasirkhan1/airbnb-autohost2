@@ -47,6 +47,10 @@ const asDate = s => new Date(s + 'T00:00:00Z');
 const ymd = d => d.toISOString().slice(0, 10);
 const isWeekend = s => [5, 6].includes(asDate(s).getUTCDay()); // Fri or Sat night
 const daysBetween = (a, b) => Math.round((asDate(b) - asDate(a)) / 86400000);
+const { dateInTimeZone } = require('../src/cleaning-schedule');
+// "Today" as the Atlanta (America/New_York) calendar date — correct on evening
+// runs too (plain UTC rolls a day ahead after ~8pm ET, throwing off days-out).
+const todayET = (now = new Date()) => dateInTimeZone(now, 'America/New_York');
 function dateRange(from, to) {
   const out = []; let d = asDate(from);
   const end = asDate(to);
@@ -220,7 +224,7 @@ async function main() {
   const overridesAll = loadJSON(path.join(ROOT, args.overrides || 'config/pricing-overrides.json'), {});
   const ledger = loadJSON(LEDGER_PATH, {});
   const token = loadToken();
-  const today = args.today || ymd(new Date());
+  const today = args.today || todayET();
 
   const from = args.from || today;
   const to = args.to || ymd(new Date(asDate(today).getTime() + (args.horizon * 86400000)));
@@ -310,7 +314,7 @@ function printPlan(nick, group, rows) {
   console.log(`   → ${n} change(s), ${rows.filter(r => r.action === 'skip').length} skipped, ${rows.filter(r => r.action === 'nochange').length} unchanged\n`);
 }
 
-module.exports = { computeTarget, isWeekend, findEvent, normalCountdownTier, compressionCountdownTier, dateRange, groupForUnit };
+module.exports = { computeTarget, isWeekend, findEvent, normalCountdownTier, compressionCountdownTier, dateRange, groupForUnit, todayET, daysBetween };
 
 if (require.main === module) {
   main().catch(e => { console.error('ERROR:', e.message); process.exit(1); });

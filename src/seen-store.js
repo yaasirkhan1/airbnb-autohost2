@@ -47,4 +47,14 @@ function saveSeen(set, file = DEFAULT_FILE) {
   }
 }
 
-module.exports = { isWithinGrace, loadSeen, saveSeen, DEFAULT_FILE, GRACE_MS };
+// Parse a timestamp to epoch ms. Handles ISO ("…T…Z" / offset) and the PHP
+// "Y-m-d H:i:s" UTC form that toHospitableDate() produces (space, no zone).
+// Returns NaN if unparseable. Use for NUMERIC comparison — never compare these
+// two formats as strings ('T' 0x54 sorts after ' ' 0x20).
+function tsMs(s) {
+  if (!s) return NaN;
+  const iso = String(s).includes('T') ? s : String(s).replace(' ', 'T') + 'Z';
+  return Date.parse(iso);
+}
+
+module.exports = { isWithinGrace, loadSeen, saveSeen, tsMs, DEFAULT_FILE, GRACE_MS };

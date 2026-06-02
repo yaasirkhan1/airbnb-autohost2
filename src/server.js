@@ -6,9 +6,9 @@ const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
 const cron         = require('node-cron');
 const vault        = require('./vault');
-const { isWithinGrace, loadSeen, saveSeen } = require('./seen-store');
+const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
-const { tomorrowInTZ, needsCleaning: needsCleaningCheck } = require('./cleaning-schedule');
+const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
 
 const app = express();
 
@@ -484,7 +484,7 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       }
       saveSeen(seenMessageIds);
 
-      if (msg.created_at && msg.created_at < pollingSince) continue;
+      if (msg.created_at && tsMs(msg.created_at) < tsMs(pollingSince)) continue;
 
       const body = (msg.body || '').trim();
       if (!body) continue;
@@ -868,23 +868,38 @@ const CONCIERGE_REGEX = new RegExp(
 
 const MAINTENANCE_EMERGENCY_REGEX = /water\s+leak|no\s+hot\s+water|smoke\s+alarm|fire\s+alarm|flood(ing)?|no\s+electricity|power\s+(is\s+)?out/i;
 
+// Only 'accepted' is a valid Hospitable status for a confirmed booking (it also
+// covers guests currently in-stay). 'checked_in' is NOT a valid status value →
+// HTTP 400, which previously made this lookup throw and the concierge email show
+// N/A check-in/out dates.
+function buildActiveReservationPath(propertyId) {
+  return `/reservations?properties[]=${propertyId}&status[]=accepted&per_page=5&include=guest`;
+}
+
+// Pure: pick the reservation whose [check_in, check_out] spans `today`
+// (YYYY-MM-DD), else the most recent. `today` must already be in the property's
+// local timezone (the caller passes the ET date).
+function findActiveReservation(reservations, today) {
+  return (
+    reservations.find(r => {
+      const ci = (r.check_in  || r.checkin  || '').slice(0, 10);
+      const co = (r.check_out || r.checkout || '').slice(0, 10);
+      return ci && co && ci <= today && co >= today;
+    }) ||
+    reservations[0] ||
+    null
+  );
+}
+
 async function getActiveReservation(propertyId) {
   if (!propertyId) return null;
   try {
-    const data = await hospGet(
-      `/reservations?properties[]=${propertyId}&status[]=accepted&status[]=checked_in&per_page=5&include=guest`
-    );
+    const data = await hospGet(buildActiveReservationPath(propertyId));
     const reservations = parseReservations(data);
-    const today = new Date().toISOString().slice(0, 10);
-    return (
-      reservations.find(r => {
-        const ci = (r.check_in  || r.checkin  || '').slice(0, 10);
-        const co = (r.check_out || r.checkout || '').slice(0, 10);
-        return ci && co && ci <= today && co >= today;
-      }) ||
-      reservations[0] ||
-      null
-    );
+    // "today" must be the property-local (Atlanta) date — a UTC date rolls a day
+    // ahead in the ET evening and mis-selects the active reservation on turnover days.
+    const today = dateInTimeZone(new Date(), 'America/New_York');
+    return findActiveReservation(reservations, today);
   } catch (e) {
     console.error('[concierge] Could not fetch reservation:', e.message);
     return null;
