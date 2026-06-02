@@ -14,6 +14,7 @@ const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms } = require('./concierge-email');
 const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-properties');
+const { resolveReplyTarget } = require('./reply-target');
 
 const app = express();
 
@@ -1370,31 +1371,49 @@ app.post('/webhook/hospitable', (req, res, next) => {
   const conciergeRegexHit = CONCIERGE_REGEX.test(messageBody) || (!!conciergeBurst && CONCIERGE_REGEX.test(conciergeBurst));
   const conciergeText     = (conciergeBurst && conciergeBurst.length > messageBody.length) ? conciergeBurst : messageBody;
 
-  // Determine the resource ID to use for sending the reply.
-  // Reservations  → POST /reservations/{id}/messages
-  // Inquiries     → POST /inquiries/{id}/messages  (Hospitable added Sept 2024)
-  // Neither       → log and bail; we don't know where to send
-  const replyResourceId   = reservationId || inquiryId || null;
-  const replyResourceType = reservationId ? 'reservation' : inquiryId ? 'inquiry' : null;
+  // Property comes straight off the webhook payload (present for reservations AND
+  // inquiries), so the scope guard works on both paths.
+  const propertyId   = msg.property?.id || null;
+  const propertyName = msg.property?.public_name || msg.property?.name || 'your listing';
 
-  // No booking → we cannot auto-reply. There is no guest reply to delay here, so
-  // we await the classifier to decide escalate (front-desk request → SMS host)
-  // vs drop. decideConciergeHit never throws and is bounded to ~4s.
-  if (!replyResourceId) {
-    const conciergeHit = await decideConciergeHit(conciergeText, conciergeRegexHit, 'webhook/no-booking');
-    if (routeAction({ hasBooking: false, conciergeHit }) === 'escalate') {
-      console.warn('[webhook] Front-desk request with NO reservation/inquiry — escalating to host by SMS (cannot auto-reply).');
-      notifyHost({ guestName, messageBody, propertyName: 'UNKNOWN UNIT (no reservation linked)' }).catch(console.error);
-      return;
-    }
-    console.warn('[webhook] No reservation_id or inquiry_id — cannot send reply. Full payload logged above.');
+  // Scope guard (mirrors the poller): drop anything that isn't one of the 7 managed
+  // Atlanta units (San Juan / Unnamed / etc.) — matched by STABLE ID, so the
+  // "World Cup…" renames are irrelevant.
+  if (propertyId && !isManaged(propertyId)) {
+    console.log(`[webhook] property ${propertyId} ("${propertyName}") is NOT a managed Atlanta unit — dropping.`);
     return;
   }
 
+  // Determine where to POST the reply.
+  //   reservation_id → /reservations/{id}/messages
+  //   inquiry_id     → /inquiries/{id}/messages
+  //   neither, but a conversation_id → recover it: it may equal a backing reservation's
+  //     conversation_id, or (pre-booking inquiry) BE the inquiry id. We VERIFY against
+  //     the property's reservations + inquiry ids before routing — never a blind POST.
+  let target = resolveReplyTarget({ reservationId, inquiryId, conversationId });
+  if (!target && conversationId && propertyId) {
+    let reservations = [], inquiryIds = [];
+    try { reservations = parseReservations(await hospGet(`/reservations?properties[]=${propertyId}&per_page=20&include=guest`)); }
+    catch (e) { console.warn(`[webhook] reservation lookup for resolution failed: ${e.message}`); }
+    try { inquiryIds = parseInquiries(await hospGet(`/inquiries?properties[]=${propertyId}&per_page=50`)).map(i => i.id); }
+    catch (e) { console.warn(`[webhook] inquiry lookup for resolution failed: ${e.message}`); }
+    target = resolveReplyTarget({ reservationId, inquiryId, conversationId, reservations, inquiryIds });
+    if (target) console.log(`[webhook] resolved reply target via ${target.via} → ${target.resourceType} ${target.resourceId}`);
+  }
+
+  if (!target) {
+    // Could not map this thread to a reservation or inquiry → escalate, never silently drop.
+    console.warn(`[webhook] Unresolvable thread (reservation_id/inquiry_id null, conversation_id="${conversationId}" matched no reservation or inquiry) — escalating to host by SMS.`);
+    notifyHost({ guestName, messageBody, propertyName }).catch(console.error);
+    return;
+  }
+
+  const replyResourceId   = target.resourceId;
+  const replyResourceType = target.resourceType;
+
   // Dedup against poller — MUST use the exact same key formula as the poller
   // (messageKey) so a message arriving via BOTH the webhook and the 60s poll is
-  // handled exactly once. (Previously the webhook prefixed the resourceType,
-  // producing a different key → every message was answered twice → 429s.)
+  // handled exactly once.
   const dedupKey = messageKey(replyResourceId, msg);
   if (seenMessageIds.has(dedupKey)) {
     console.log('[webhook] Already seen (poller got it first) — skipping');
@@ -1402,36 +1421,6 @@ app.post('/webhook/hospitable', (req, res, next) => {
   }
   seenMessageIds.add(dedupKey);
   saveSeen(seenMessageIds);
-
-  // Fetch property info from reservation (inquiries may not have property context)
-  let propertyId   = null;
-  let propertyName = 'your listing';
-  if (reservationId) {
-    try {
-      const resData = await hospGet(`/reservations/${reservationId}?include=properties`);
-      const r    = resData.data || resData;
-      // Log the raw shape so we can see exactly what include=properties returns
-      console.log('[webhook] reservation lookup keys:', Object.keys(r).join(', '));
-      console.log('[webhook] reservation properties field:', JSON.stringify(r.properties || r.property || 'missing'));
-      const prop = r.properties?.[0] || r.property || null;
-      propertyId   = prop?.id || null;
-      propertyName = prop?.public_name || prop?.name || 'your listing';
-      console.log(`[webhook] resolved property="${propertyName}" id=${propertyId}`);
-      console.log(`[webhook] propertyProfiles has this id: ${propertyProfiles.has(propertyId)}`);
-      console.log(`[webhook] known profile ids: ${[...propertyProfiles.keys()].join(', ')}`);
-    } catch (e) {
-      console.warn(`[webhook] Could not fetch reservation for property info: ${e.message}`);
-    }
-  }
-
-  // Scope guard (mirrors the poller): once we know the property, drop anything that
-  // isn't one of the 7 managed Atlanta units (San Juan / Unnamed / etc.) — matched by
-  // STABLE ID, so the "World Cup…" renames are irrelevant. Inquiries with no resolvable
-  // property fall through; the inquiry poller is itself scoped to the managed IDs.
-  if (propertyId && !isManaged(propertyId)) {
-    console.log(`[webhook] property ${propertyId} ("${propertyName}") is NOT a managed Atlanta unit — dropping.`);
-    return;
-  }
 
   if (propertyId && !propertyProfiles.has(propertyId)) {
     learnPropertyProfile(propertyId, propertyName).catch(console.error);
