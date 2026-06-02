@@ -11,7 +11,7 @@ const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } =
 const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
-const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply } = require('./concierge-email');
+const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms } = require('./concierge-email');
 
 const app = express();
 
@@ -512,29 +512,20 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       }
 
       if (conciergeRegexHit) {
-        // AWAIT-gated concierge path (ONLY this case awaits): send the email FIRST,
-        // then tell the guest "emailed" only if it actually succeeded; on failure send
-        // an honest reply + SMS-escalate. resolveConciergeReply never throws.
-        const { ok, reply } = await resolveConciergeReply({
-          guestName,
-          sendEmail: () => sendConciergeEmail({ guestName, propertyId, resourceId, resourceType }),
-          escalate: (e) => notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED for ${guestName} (${e.message.slice(0, 80)}). Please call the front desk to authorize this guest's access.`, propertyName }),
-        });
-        console.log(`[poll/${tag}] concierge ${ok ? 'email OK → confirming to guest' : 'email FAILED → honest reply + host escalated'}`);
+        // AWAIT-gated concierge path (ONLY this case awaits): email first, then the
+        // guest is told "emailed" only on success / honest reply + escalate on failure,
+        // and (trial) the host gets a SENT/FAILED SMS. resolveConciergeReply never throws.
+        const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context: `poll/${tag}` });
         scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
         continue; // handled this message
       }
 
       // Non-concierge: best-effort AI email on a regex miss (NON-BLOCKING — never
-      // slows the normal reply), then the normal reply path.
+      // slows the normal reply). On an AI hit, the host still gets the SENT/FAILED SMS.
       decideConciergeHit(conciergeText, false, `poll/${tag}`)
         .then(hit => {
           if (hit) {
-            sendConciergeEmail({ guestName, propertyId, resourceId, resourceType })
-              .catch(e => {
-                console.error(`[concierge] Email failed: ${e.message}`);
-                notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED (AI-detected) for ${guestName}: ${e.message.slice(0, 80)}`, propertyName }).catch(() => {});
-              });
+            runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context: `poll/${tag}/ai` }).catch(() => {});
           }
         })
         .catch(e => console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`));
@@ -764,40 +755,53 @@ async function decideConciergeHit(text, regexHit, context = '') {
   return rec.fired;
 }
 
+// Run the front-desk contingency once a hit is confirmed: await the email, then
+//   success → (trial) SMS the host "✅ … SENT" when CONCIERGE_NOTIFY_ALL!=='false'
+//   failure → SMS the host "❌ … FAILED" escalation (always)
+// Returns { ok, reply } from resolveConciergeReply (never throws). Used by both the
+// regex/burst await-gated path and the fire-and-forget AI path.
+async function runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context }) {
+  const propMap   = loadPropertiesMap();
+  const unitLabel = propMap[propertyId]?.label || propMap[propertyId]?.unit || `unit (${(propertyId || '').slice(0, 8)})`;
+  const notifyAll = process.env.CONCIERGE_NOTIFY_ALL !== 'false'; // trial: default ON; set false to revert to failure-only
+  const res = await resolveConciergeReply({
+    guestName, unitLabel, notifyAll,
+    sendEmail:     () => sendConciergeEmail({ guestName, propertyId, resourceId, resourceType }),
+    notifySuccess: (text) => notifyHostRaw(text),
+    escalate:      (e) => notifyHostRaw(conciergeFailedSms({ guestName, unitLabel, error: e })),
+  });
+  console.log(`[${context}] concierge ${res.ok ? `email OK → guest confirmed${notifyAll ? ' + host SMS (SENT)' : ''}` : 'email FAILED → honest reply + host escalated'}`);
+  return res;
+}
+
 // ─── Host notifications ───────────────────────────────────────────────────────
 
-async function notifyHost({ guestName, messageBody, propertyName }) {
-  const logLine = `[notify] ⚠ MANUAL REPLY NEEDED — Guest: "${guestName}" | Property: "${propertyName}" | Message: "${messageBody.slice(0, 120)}"`;
-
-  const apiKey  = process.env.QUO_API_KEY;
-  const from    = process.env.QUO_FROM_NUMBER;
-  const to      = process.env.NOTIFY_PHONE;
+// Send a raw SMS to the host exactly as written (no "needs your reply" wrapper).
+// Used for concierge SENT/FAILED notifications, which need precise wording.
+async function notifyHostRaw(text) {
+  const apiKey = process.env.QUO_API_KEY;
+  const from   = process.env.QUO_FROM_NUMBER;
+  const to     = process.env.NOTIFY_PHONE;
 
   if (!apiKey || !from || !to) {
-    console.warn(logLine);
-    console.warn('[notify] Set QUO_API_KEY, QUO_FROM_NUMBER, NOTIFY_PHONE to receive SMS alerts.');
+    console.warn(`[notify] (no SMS creds) would send: "${text}"`);
     return;
   }
-
-  const smsBody = `⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Message: "${messageBody.slice(0, 100)}"`;
-
   try {
     const res = await fetch('https://api.openphone.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Authorization': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ to: [to], from, content: smsBody }),
+      headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: [to], from, content: text.slice(0, 300) }),
     });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`OpenPhone ${res.status}: ${err}`);
-    }
-    console.log(`[notify] SMS sent via OpenPhone to ${to} for "${guestName}"`);
+    if (!res.ok) throw new Error(`OpenPhone ${res.status}: ${await res.text()}`);
+    console.log(`[notify] SMS sent via OpenPhone to ${to}: "${text.slice(0, 80)}"`);
   } catch (e) {
-    console.error(`[notify] SMS failed (${e.message}) — ${logLine}`);
+    console.error(`[notify] SMS failed (${e.message}) — intended: "${text.slice(0, 120)}"`);
   }
+}
+
+async function notifyHost({ guestName, messageBody, propertyName }) {
+  return notifyHostRaw(`⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Message: "${messageBody.slice(0, 100)}"`);
 }
 
 // ─── Hardcoded responses — bypass Claude for common predictable questions ─────
@@ -1419,30 +1423,21 @@ app.post('/webhook/hospitable', (req, res, next) => {
   }
 
   if (conciergeRegexHit) {
-    // AWAIT-gated concierge path (ONLY this case awaits): send the email FIRST, then
-    // tell the guest "emailed" only if it actually succeeded; on failure send an
-    // honest reply + SMS-escalate. resolveConciergeReply never throws.
-    const { ok, reply } = await resolveConciergeReply({
-      guestName,
-      sendEmail: () => sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType }),
-      escalate: (e) => notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED for ${guestName} (${e.message.slice(0, 80)}). Please call the front desk to authorize this guest's access.`, propertyName }),
-    });
-    console.log(`[webhook] concierge ${ok ? 'email OK → confirming to guest' : 'email FAILED → honest reply + host escalated'}`);
+    // AWAIT-gated concierge path (ONLY this case awaits): email first, then the guest
+    // is told "emailed" only on success / honest reply + escalate on failure, and
+    // (trial) the host gets a SENT/FAILED SMS. resolveConciergeReply never throws.
+    const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType, propertyName, context: 'webhook' });
     scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
     console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
     return; // handled this message
   }
 
   // Non-concierge: best-effort AI email on a regex miss (NON-BLOCKING — never slows
-  // the normal reply), then the normal reply path.
+  // the normal reply). On an AI hit, the host still gets the SENT/FAILED SMS.
   decideConciergeHit(conciergeText, false, 'webhook')
     .then(hit => {
       if (hit) {
-        sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType })
-          .catch(e => {
-            console.error(`[concierge] Email failed: ${e.message}`);
-            notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED (AI-detected) for ${guestName}: ${e.message.slice(0, 80)}`, propertyName }).catch(() => {});
-          });
+        runConciergeContingency({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType, propertyName, context: 'webhook/ai' }).catch(() => {});
       }
     })
     .catch(e => console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`));

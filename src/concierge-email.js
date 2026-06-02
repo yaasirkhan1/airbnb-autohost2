@@ -47,18 +47,33 @@ function conciergeFailureReply(guestName) {
   return `Hi ${name}, thanks for letting us know — I'm on it. I'm being notified right now and will follow up with the front desk directly to get you checked in. Please hang tight, and reply here if anything changes and I'll jump in immediately. 🙏`;
 }
 
+// Host SMS wording (trial: notify on every concierge event, not just failures).
+function conciergeSentSms({ guestName, unitLabel }) {
+  return `✅ Front-desk email SENT for ${guestName} / ${unitLabel} — guest told to check with the concierge.`;
+}
+function conciergeFailedSms({ guestName, unitLabel, error }) {
+  const reason = error && error.message ? error.message.slice(0, 80) : 'unknown error';
+  return `❌ Front-desk email FAILED for ${guestName} / ${unitLabel} (${reason}). Please call the front desk to authorize this guest's access.`;
+}
+
 // Await-before-promise orchestrator for a concierge hit: send the email FIRST, and
 // only tell the guest "emailed" if it actually succeeded. On failure, return an
 // honest reply (no false claim) and escalate to the host. Side-effects are injected
-// so both paths are unit-testable; never throws.
-//   sendEmail() — async, resolves on a real send, rejects on failure
-//   escalate(err) — async, SMS the host (only called on failure)
-async function resolveConciergeReply({ guestName, sendEmail, escalate }) {
+// so every path is unit-testable; never throws.
+//   sendEmail()        — async, resolves on a real send, rejects on failure
+//   notifySuccess(text)— async, SMS the host on success (only when notifyAll)
+//   escalate(err)      — async, SMS the host on failure (always)
+//   notifyAll          — trial gate (env CONCIERGE_NOTIFY_ALL !== 'false'); when
+//                        false, success is silent (failure-only escalation)
+async function resolveConciergeReply({ guestName, unitLabel, sendEmail, escalate, notifySuccess, notifyAll = true }) {
   try {
     await sendEmail();
+    if (notifyAll && typeof notifySuccess === 'function') {
+      try { await notifySuccess(conciergeSentSms({ guestName, unitLabel })); } catch (_) { /* best-effort */ }
+    }
     return { ok: true, reply: conciergeGuestReply(guestName) };
   } catch (err) {
-    if (typeof escalate === 'function') { try { await escalate(err); } catch (_) { /* escalation best-effort */ } }
+    if (typeof escalate === 'function') { try { await escalate(err); } catch (_) { /* best-effort */ } }
     return { ok: false, reply: conciergeFailureReply(guestName), error: err };
   }
 }
@@ -69,4 +84,6 @@ module.exports = {
   conciergeFailureReply,
   conciergeHardcodedReply,
   resolveConciergeReply,
+  conciergeSentSms,
+  conciergeFailedSms,
 };
