@@ -11,6 +11,7 @@ const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } =
 const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
+const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply } = require('./concierge-email');
 
 const app = express();
 
@@ -497,23 +498,12 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       console.log(`[poll/${tag}] 📨 "${guestName}" property="${propertyName}" (${resourceId}): "${body.slice(0, 80)}"`);
       console.log(`[poll/${tag}] using profile: ${propertyProfiles.has(propertyId)}`);
 
-      // Concierge/front-desk email side-effect — this message OR a tight burst
-      // of recent short fragments. Regex fast-path fires instantly; on a regex
-      // miss the AI classifier is consulted. Run as a NON-BLOCKING side-effect so
-      // it can never block, delay, or crash the guest reply below.
-      {
-        const burst = fragmentBurst(messages);
-        const regexHit = CONCIERGE_REGEX.test(body) || (!!burst && CONCIERGE_REGEX.test(burst));
-        const conciergeText = (burst && burst.length > body.length) ? burst : body;
-        decideConciergeHit(conciergeText, regexHit, `poll/${tag}`)
-          .then(hit => {
-            if (hit) {
-              sendConciergeEmail({ guestName, propertyId, resourceId, resourceType })
-                .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
-            }
-          })
-          .catch(e => console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`));
-      }
+      // Front-desk contingency detection — this message OR a tight burst of recent
+      // short fragments. conciergeRegexHit (regex on the message or the burst) is the
+      // synchronous, deterministic front-desk signal.
+      const conciergeBurst    = fragmentBurst(messages);
+      const conciergeRegexHit = CONCIERGE_REGEX.test(body) || (!!conciergeBurst && CONCIERGE_REGEX.test(conciergeBurst));
+      const conciergeText     = (conciergeBurst && conciergeBurst.length > body.length) ? conciergeBurst : body;
 
       // Maintenance emergency SMS side-effect — notify host immediately
       if (MAINTENANCE_EMERGENCY_REGEX.test(body)) {
@@ -521,8 +511,36 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
           .catch(e => console.error(`[maintenance] SMS failed: ${e.message}`));
       }
 
+      if (conciergeRegexHit) {
+        // AWAIT-gated concierge path (ONLY this case awaits): send the email FIRST,
+        // then tell the guest "emailed" only if it actually succeeded; on failure send
+        // an honest reply + SMS-escalate. resolveConciergeReply never throws.
+        const { ok, reply } = await resolveConciergeReply({
+          guestName,
+          sendEmail: () => sendConciergeEmail({ guestName, propertyId, resourceId, resourceType }),
+          escalate: (e) => notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED for ${guestName} (${e.message.slice(0, 80)}). Please call the front desk to authorize this guest's access.`, propertyName }),
+        });
+        console.log(`[poll/${tag}] concierge ${ok ? 'email OK → confirming to guest' : 'email FAILED → honest reply + host escalated'}`);
+        scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
+        continue; // handled this message
+      }
+
+      // Non-concierge: best-effort AI email on a regex miss (NON-BLOCKING — never
+      // slows the normal reply), then the normal reply path.
+      decideConciergeHit(conciergeText, false, `poll/${tag}`)
+        .then(hit => {
+          if (hit) {
+            sendConciergeEmail({ guestName, propertyId, resourceId, resourceType })
+              .catch(e => {
+                console.error(`[concierge] Email failed: ${e.message}`);
+                notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED (AI-detected) for ${guestName}: ${e.message.slice(0, 80)}`, propertyName }).catch(() => {});
+              });
+          }
+        })
+        .catch(e => console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`));
+
       try {
-        const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId);
+        const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId, false);
         if (!confident || !reply) {
           console.log(`[poll/${tag}] Low confidence — escalated to host, no guest reply`);
           notifyHost({ guestName, messageBody: body, propertyName }).catch(console.error);
@@ -947,22 +965,9 @@ async function sendConciergeEmail({ guestName, propertyId, resourceId, resourceT
     : null;
   const checkIn  = reservation?.check_in  || reservation?.checkin  || 'N/A';
   const checkOut = reservation?.check_out || reservation?.checkout || 'N/A';
+  const code     = reservation?.code || reservation?.confirmation_code || null;
 
-  const subject = `Check-In Info for Guest in ${unitLabel} | ${checkIn} - ${checkOut}`;
-  const body = `Hi,
-
-Please allow ${guestName} to access unit ${unitLabel}.
-
-Guest Name: ${guestName}
-Unit: ${unitLabel}
-Check-In: ${checkIn} at 4:00 PM
-Check-Out: ${checkOut}
-
-Please grant this guest full access to the unit for the duration of their stay.
-
-Thank you,
-Yasser Khan
-Peachtree Tower Rentals`;
+  const { subject, body } = buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, code });
 
   const to = process.env.CONCIERGE_EMAIL_TO || '300ptconcierge@gmail.com';
   console.log(`[concierge] Sending email — unit=${unitLabel} guest="${guestName}" to=${to}`);
@@ -972,10 +977,11 @@ Peachtree Tower Rentals`;
   const gmailPass  = process.env.GMAIL_APP_PASSWORD;
 
   if (!resendKey && !gmailUser) {
-    console.warn('[concierge] No email credentials set — logging email only');
-    console.warn(`[concierge] TO: ${to} | SUBJECT: ${subject}`);
-    console.warn(`[concierge] BODY:\n${body}`);
-    return;
+    // No way to actually send — treat as a failure so the guest is never told it
+    // was emailed when it wasn't. Callers own escalation.
+    console.error('[concierge] No email credentials set — cannot send front-desk email');
+    console.error(`[concierge] (would-be) TO: ${to} | SUBJECT: ${subject}`);
+    throw new Error('No email credentials configured (RESEND_API_KEY / GMAIL_USER)');
   }
 
   try {
@@ -1002,14 +1008,9 @@ Peachtree Tower Rentals`;
     await transporter.sendMail({ from: gmailUser, to, subject, text: body });
     console.log(`[concierge] ✓ Email sent via SMTP to ${to} for ${guestName} in ${unitLabel}`);
   } catch (e) {
-    // Don't fail silently: if the front-desk email can't be delivered, alert the host
-    // by SMS so a human can call the front desk and authorize access manually.
-    console.error(`[concierge] ✗ Email FAILED to ${to}: ${e.message} — escalating to host SMS`);
-    await notifyHost({
-      guestName,
-      messageBody: `FRONT-DESK EMAIL FAILED for unit ${unitLabel} (${e.message.slice(0, 80)}). Please call the front desk to authorize this guest's access.`,
-      propertyName: unitLabel,
-    });
+    // Leaf function: surface the failure to the caller. The caller owns escalation
+    // (host SMS) + the honest guest reply, so escalation happens exactly once.
+    console.error(`[concierge] ✗ Email FAILED to ${to}: ${e.message}`);
     throw e;
   }
 }
@@ -1020,10 +1021,7 @@ function detectHardcodedResponse(guestName, messageBody) {
 
   // Front desk / building access — highest priority, fires before everything else
   if (CONCIERGE_REGEX.test(b)) {
-    return {
-      confident: true,
-      reply: `Hi ${name}, thanks for letting us know! A form was sent out this morning — I've also just emailed the front desk a supplementary email with your check-in information. Please let the front desk know that an email has been sent to them and to check their email — they should have everything they need to let you up right away. If you have any further trouble, reply here immediately and I'll call them directly. Welcome! 😊`,
-    };
+    return { confident: true, reply: conciergeGuestReply(guestName) };
   }
 
   // Lockout / key not working — second-highest priority after concierge
@@ -1116,7 +1114,16 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
   return scored.sort((a, b) => b.score - a.score).slice(0, count).filter(p => p.score > 0);
 }
 
-async function draftReply(guestName, messageBody, propertyName, propertyId) {
+async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false) {
+  // Front-desk contingency detected by ANY means (single regex, fragment burst, or
+  // classifier) → send the EXACT hardcoded reply, never Claude's freeform wording.
+  // This catches split/fragmented requests that no single message matches.
+  const conciergeReply = conciergeHardcodedReply({ conciergeHit, guestName });
+  if (conciergeReply) {
+    console.log(`[draft] Concierge contingency (conciergeHit) — sending exact hardcoded reply`);
+    return conciergeReply;
+  }
+
   // Entry/door code request → reply with THIS unit's emergency code (if set).
   // reservation propertyId → properties-map label (unit) → config/entry-codes.json.
   // If we can't safely resolve a code (unknown unit / no code set), escalate to
@@ -1411,21 +1418,37 @@ app.post('/webhook/hospitable', (req, res, next) => {
     learnPropertyProfile(propertyId, propertyName).catch(console.error);
   }
 
-  // Concierge/front-desk email side-effect — fires on this message OR a tight
-  // burst of recent short fragments. Regex fast-path fires instantly; AI on a
-  // regex miss. Run NON-BLOCKING so it can never block, delay, or crash the guest
-  // reply below — the reply path proceeds immediately regardless of the AI call.
-  decideConciergeHit(conciergeText, conciergeRegexHit, 'webhook')
+  if (conciergeRegexHit) {
+    // AWAIT-gated concierge path (ONLY this case awaits): send the email FIRST, then
+    // tell the guest "emailed" only if it actually succeeded; on failure send an
+    // honest reply + SMS-escalate. resolveConciergeReply never throws.
+    const { ok, reply } = await resolveConciergeReply({
+      guestName,
+      sendEmail: () => sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType }),
+      escalate: (e) => notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED for ${guestName} (${e.message.slice(0, 80)}). Please call the front desk to authorize this guest's access.`, propertyName }),
+    });
+    console.log(`[webhook] concierge ${ok ? 'email OK → confirming to guest' : 'email FAILED → honest reply + host escalated'}`);
+    scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
+    console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
+    return; // handled this message
+  }
+
+  // Non-concierge: best-effort AI email on a regex miss (NON-BLOCKING — never slows
+  // the normal reply), then the normal reply path.
+  decideConciergeHit(conciergeText, false, 'webhook')
     .then(hit => {
       if (hit) {
         sendConciergeEmail({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType })
-          .catch(e => console.error(`[concierge] Email failed: ${e.message}`));
+          .catch(e => {
+            console.error(`[concierge] Email failed: ${e.message}`);
+            notifyHost({ guestName, messageBody: `FRONT-DESK EMAIL FAILED (AI-detected) for ${guestName}: ${e.message.slice(0, 80)}`, propertyName }).catch(() => {});
+          });
       }
     })
     .catch(e => console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`));
 
   try {
-    const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId);
+    const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId, false);
     if (!confident || !reply) {
       console.log(`[webhook] Low confidence — escalated to host, no guest reply`);
       notifyHost({ guestName, messageBody, propertyName }).catch(console.error);
