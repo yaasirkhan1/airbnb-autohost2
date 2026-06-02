@@ -15,6 +15,12 @@ const { decideConcierge } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms } = require('./concierge-email');
 const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-properties');
 const { resolveReplyTarget } = require('./reply-target');
+const { loadKnowledgeBase } = require('./knowledge-base');
+
+// Concierge / event-intelligence knowledge base (local-area facts). Loaded once at
+// startup from the repo (DATA_DIR), injected into draftReply's system prompt so Claude
+// answers area/venue/transit/distance questions confidently instead of escalating.
+const KNOWLEDGE_BASE = loadKnowledgeBase();
 
 const app = express();
 
@@ -1182,6 +1188,7 @@ Common questions you CAN always answer confidently (set "confident": true):
 - Heating/cooling/thermostat: Radiation unit under each window; press back two corners of the square panel on top.
 - WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If not listed, set "confident": false.
 - Parking questions: Send the full Peachtree Towers parking guide (AAA Garage on Baker St is closest).
+- Local area / nearby venues / things to do / walking distances / transit & MARTA / getting to the stadium, arena, or convention center / downtown events: answer using the LOCAL AREA & EVENTS KNOWLEDGE section below. Use ONLY the facts stated there (distances, walk times, transit). If a specific detail is not in that section, set "confident": false rather than guessing.
 
 Reply style — Marriott-style hospitality service (voice only; never change facts/policies):
 - Warm & gracious: make the guest feel genuinely welcomed and valued.
@@ -1192,6 +1199,11 @@ Reply style — Marriott-style hospitality service (voice only; never change fac
 - Always close with a gracious offer to help further (e.g. "Please don't hesitate to reach out if there's anything else I can do for you.").
 - Do not add a name signature/sign-off.
 - Never invent facts — all policies, times, fees, and details must come from the information above.`;
+
+  // Inject the concierge / event knowledge base so area questions answer from facts.
+  const knowledgeSection = KNOWLEDGE_BASE
+    ? `\nLOCAL AREA & EVENTS KNOWLEDGE (authoritative concierge facts — use ONLY these for nearby venues, walking distances, transit/MARTA, and downtown events; do not invent anything beyond this):\n${KNOWLEDGE_BASE}\n`
+    : '';
 
   if (profileData?.profile) {
     const exampleBlock = examples.length
@@ -1212,6 +1224,7 @@ ${HOST_SETTINGS.extraContext ? `- Extra context: ${HOST_SETTINGS.extraContext}` 
 ${vaultEntry?.guest_access ? `- Guest access / WiFi: ${vaultEntry.guest_access}` : ''}
 ${vaultEntry?.getting_around ? `- Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `- Additional notes: ${vaultEntry.customNotes}` : ''}
+${knowledgeSection}
 ${exampleBlock}
 ${JSON_INSTRUCTIONS}`;
   } else {
@@ -1224,6 +1237,7 @@ ${HOST_SETTINGS.extraContext ? `Context: ${HOST_SETTINGS.extraContext}` : ''}
 ${vaultEntry?.guest_access ? `Guest access / WiFi: ${vaultEntry.guest_access}` : ''}
 ${vaultEntry?.getting_around ? `Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `Additional notes: ${vaultEntry.customNotes}` : ''}
+${knowledgeSection}
 ${JSON_INSTRUCTIONS}`;
   }
 
