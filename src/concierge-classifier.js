@@ -24,6 +24,8 @@
 
 const CLASSIFIER_SYSTEM_PROMPT = `You are a strict binary classifier for an Airbnb auto-host system. The properties are units in a high-rise building that has a front desk / concierge in the lobby.
 
+PROPERTY CHECK-IN CONTEXT (important): At this building, guests cannot reach their unit on their own at check-in. The lobby front desk / concierge must clear each guest before letting them up, and the desk will only do that once the host has sent them the guest's check-in form or a supplementary authorization email. So when a guest is stuck at the desk or in the lobby, asking us to confirm/call the front desk, saying they can't get up, or asking which room they're in, it almost always means the desk does not yet have their authorization and the host needs to send it.
+
 Decide whether the guest's message indicates THIS SPECIFIC SITUATION:
 "The building's front desk / concierge cannot check the guest in, or won't let them in or up or give them a key, because the front desk does not have the guest's reservation, registration, or check-in authorization on file — so the host needs to send the guest's reservation details to the front desk."
 
@@ -32,13 +34,16 @@ Answer YES if the message shows ANY of these:
 - The guest asks whether the host sent (or asks the host to send) their reservation / info / form / details to the front desk or concierge.
 - The guest is being denied entry, access, a key, or a fob because the desk lacks their paperwork.
 - Short fragments that together mean "send my reservation to the front desk / concierge" or "did you send my info to the desk".
+- The guest says they are waiting / stuck / still in the lobby or downstairs, or can't get up to their floor.
+- The guest asks the host to confirm to, call, or contact the front desk (e.g. "please call the front desk to confirm", "can you confirm with the desk"), or relays our internal phrasing like "update me in the spreadsheet".
+- The guest asks what / which room number they are in, or where to go, around check-in time (the desk can't place them without our authorization).
 
 Answer NO if the message is anything else, including:
 - Simply asking where the front desk is, when it is open, its hours, or its phone number.
 - Asking for wifi, towels, parking, amenities, luggage, directions, or any other normal request — even if it mentions the words "send" or "front desk".
 - Any question that does not involve the front desk lacking the guest's reservation or check-in authorization.
 
-When uncertain, answer NO. Reply with EXACTLY one word: YES or NO. No punctuation, no explanation.`;
+When the message plausibly fits the check-in context above, prefer YES. When genuinely uncertain and it does NOT fit that context, answer NO. Reply with EXACTLY one word: YES or NO. No punctuation, no explanation.`;
 
 // Strict parse: only an affirmative leading "YES" fires. Anything else is silent.
 function parseVerdict(text) {
