@@ -16,11 +16,16 @@ const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resol
 const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-properties');
 const { resolveReplyTarget } = require('./reply-target');
 const { loadKnowledgeBase } = require('./knowledge-base');
+const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
 
 // Concierge / event-intelligence knowledge base (local-area facts). Loaded once at
 // startup from the repo (DATA_DIR), injected into draftReply's system prompt so Claude
 // answers area/venue/transit/distance questions confidently instead of escalating.
 const KNOWLEDGE_BASE = loadKnowledgeBase();
+// Parking facts (src/knowledge/parking.md) injected into draftReply on parking
+// questions so Claude answers the specific question from verified facts only —
+// replaces the old one-size-fits-all PARKING_REPLY block.
+const PARKING_SECTION = buildParkingSection(loadParkingKB());
 
 const app = express();
 
@@ -821,64 +826,6 @@ async function notifyHost({ guestName, messageBody, propertyName }) {
 
 // ─── Hardcoded responses — bypass Claude for common predictable questions ─────
 
-const PARKING_REPLY = `Parking Information – Peachtree Towers
-
-We understand that parking is an important part of planning your trip, and there are several convenient, secure, and affordable parking options located just steps from the building. Most guests find parking quick and easy once they arrive.
-
-Closest & Most Convenient Option
-
-AAA Parking Garage – 17 Baker St NE, Atlanta, GA 30308
-- Approximately 1–2 minute walk from the building
-- Covered garage, safe and secure
-- Generally the most convenient option for guests
-- Rates vary based on demand and city events
-- Typically has reliable availability except during major downtown events
-
-Additional Nearby Parking Options
-
-Peachtree Center Garage – 161 Peachtree Center Ave
-- Approximately 5-minute walk
-- Covered and secure
-- Typical rates range from $10–$15 per day (may vary)
-
-LAZ Parking – Courtland Street Lots
-- Approximately 4–6 minute walk
-- Often offers additional availability during busy periods
-- Typical rates range from $8–$15 per day (may vary)
-
-Emory / Children's Healthcare Garage
-- Approximately 2–3 minute walk
-- Clean, well-maintained facility
-- Typical rates range from $12–$15 per day (may vary)
-
-Street Parking
-
-Street parking may be available on Peachtree Street, Baker Street, and surrounding blocks.
-- Typically $2–$4 per hour
-- Limited availability, especially during business hours and events
-- Please review posted signage carefully, as some areas have restricted or tow-away zones
-
-Helpful Tip: ParkMobile App
-
-We highly recommend downloading the ParkMobile app before arrival. It allows you to view nearby options, compare real-time pricing, check availability, and extend parking remotely from your phone.
-
-Event & Convention Notice
-
-Downtown Atlanta hosts many major events throughout the year. Parking rates may increase during high-demand periods, including events at Georgia World Congress Center, Mercedes-Benz Stadium, State Farm Arena, Dragon Con, and major conventions, concerts, and sporting events. Arriving earlier in the day can help secure the best rates and availability.
-
-Quick Summary
-
-✓ Several secure parking garages are located within a 1–5 minute walk of the building
-✓ The AAA Garage is typically the closest and most convenient option
-✓ Street parking is available but limited
-✓ ParkMobile is the easiest way to find and manage parking during your stay
-✓ Parking is not included with the reservation, but multiple options are available nearby to fit different budgets
-
-If you have any questions before arrival, we're always happy to help point you toward the best option for your stay.
-
-Warm regards,
-Cal`;
-
 // ─── Concierge / front-desk access issues ────────────────────────────────────
 
 const CONCIERGE_REGEX = new RegExp(
@@ -1116,10 +1063,9 @@ function detectHardcodedResponse(guestName, messageBody) {
     };
   }
 
-  // Parking
-  if (/\bpark(ing)?\b/.test(b)) {
-    return { confident: true, reply: PARKING_REPLY };
-  }
+  // Parking questions are intentionally NOT hardcoded — they flow to draftReply,
+  // which injects PARKING_SECTION (src/knowledge/parking.md) so Claude answers the
+  // specific question from verified facts only. (Concierge + door-code stay hardcoded.)
 
   // WiFi / internet
   if (/\bwi?-?fi\b|\bpassword\b|\binternet\b|\bnetwork\b/.test(b)) {
@@ -1203,7 +1149,7 @@ Common questions you CAN always answer confidently (set "confident": true):
 - Late checkout requests: Available until 1:30 PM for a $45 fee; confirm availability and send payment request.
 - Heating/cooling/thermostat: Radiation unit under each window; press back two corners of the square panel on top.
 - WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If not listed, set "confident": false.
-- Parking questions: Send the full Peachtree Towers parking guide (AAA Garage on Baker St is closest).
+- Parking questions: answer the SPECIFIC question from the PARKING KNOWLEDGE BASE section using only its [VERIFIED]/[GUEST-REPORTED] facts. Never state anything tagged VERIFY/YOUR INPUT, never mention safety/break-in notes, point the guest to SpotHero/ParkMobile for live rates, and always close with the parking disclaimer.
 - Local area / nearby venues / things to do / walking distances / transit & MARTA / getting to the stadium, arena, or convention center / downtown events: answer using the LOCAL AREA & EVENTS KNOWLEDGE section below. Use ONLY the facts stated there (distances, walk times, transit). If a specific detail is not in that section, set "confident": false rather than guessing.
 
 Reply style — Marriott-style hospitality service (voice only; never change facts/policies):
@@ -1220,6 +1166,10 @@ Reply style — Marriott-style hospitality service (voice only; never change fac
   const knowledgeSection = KNOWLEDGE_BASE
     ? `\nLOCAL AREA & EVENTS KNOWLEDGE (authoritative concierge facts — use ONLY these for nearby venues, walking distances, transit/MARTA, and downtown events; do not invent anything beyond this):\n${KNOWLEDGE_BASE}\n`
     : '';
+
+  // Inject the parking knowledge base only on parking questions (keeps the prompt
+  // lean otherwise). Replaces the old hardcoded PARKING_REPLY one-liner branch.
+  const parkingSection = isParkingQuestion(messageBody) ? PARKING_SECTION : '';
 
   if (profileData?.profile) {
     const exampleBlock = examples.length
@@ -1241,6 +1191,7 @@ ${vaultEntry?.guest_access ? `- Guest access / WiFi: ${vaultEntry.guest_access}`
 ${vaultEntry?.getting_around ? `- Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `- Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
+${parkingSection}
 ${exampleBlock}
 ${JSON_INSTRUCTIONS}`;
   } else {
@@ -1254,6 +1205,7 @@ ${vaultEntry?.guest_access ? `Guest access / WiFi: ${vaultEntry.guest_access}` :
 ${vaultEntry?.getting_around ? `Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
+${parkingSection}
 ${JSON_INSTRUCTIONS}`;
   }
 
@@ -2569,6 +2521,9 @@ app.get('/api/debug-reservations/:propertyId', async (req, res) => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
+// Only boot the HTTP server / pollers / cron when run directly (node src/server.js).
+// When required by a test, skip startup so functions can be imported side-effect-free.
+if (require.main === module) {
 app.listen(PORT, () => {
   console.log(`\n🏠 Airbnb AutoHost running on port ${PORT}`);
   console.log(`   Host: ${HOST_SETTINGS.name} | Delay: ${HOST_SETTINGS.delayMinutes}min\n`);
@@ -2594,6 +2549,7 @@ app.listen(PORT, () => {
   }, { timezone: 'America/New_York' });
   console.log('[cleaning] Cron scheduled — 9:00 PM Eastern daily');
 });
+}
 
 // Catch unhandled promise rejections so a single async failure can't take
 // down the server (Railway sends SIGTERM when the process exits unexpectedly)
@@ -2716,3 +2672,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
     notice: 'The Hospitable public API does not support writing listing content. Copy the text below and paste each section into Hospitable manually.',
   });
 });
+
+// Exported for unit tests (see scripts/test-*.js). Importing this module does NOT
+// start the server thanks to the `require.main === module` guard around app.listen.
+module.exports = { detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX };
