@@ -549,7 +549,7 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
         .catch(e => console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`));
 
       try {
-        const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId, false);
+        const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId, false, resourceId, resourceType);
         if (!confident || !reply) {
           console.log(`[poll/${tag}] Low confidence — escalated to host, no guest reply`);
           notifyHost({ guestName, messageBody: body, propertyName }).catch(console.error);
@@ -736,7 +736,12 @@ async function runPricingEngine() {
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
 
-async function callClaude(systemPrompt, userMsg, maxTokens = 800) {
+async function callClaude(systemPrompt, userMsgOrMessages, maxTokens = 800) {
+  // Accept either a single string (legacy callers) or a full messages array
+  // (conversation history). A string is wrapped as one user turn, exactly as before.
+  const messages = Array.isArray(userMsgOrMessages)
+    ? userMsgOrMessages
+    : [{ role: 'user', content: userMsgOrMessages }];
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -748,7 +753,7 @@ async function callClaude(systemPrompt, userMsg, maxTokens = 800) {
       model: 'claude-opus-4-8',
       max_tokens: maxTokens,
       system: systemPrompt,
-      messages: [{ role: 'user', content: userMsg }],
+      messages,
     }),
   });
   if (!response.ok) {
@@ -1093,7 +1098,49 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
   return scored.sort((a, b) => b.score - a.score).slice(0, count).filter(p => p.score > 0);
 }
 
-async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false) {
+// Build an Anthropic messages array from a Hospitable reservation thread so Claude
+// sees the real conversation (what it already said + what the guest actually asked).
+//   guest (sender_type/sender_role) → {role:'user'};  host/co-host/teammate → {role:'assistant'}.
+// Chronological; empty-body messages skipped; consecutive same-role turns merged
+// (the API wants alternating roles); capped to the last `cap` turns; leading
+// assistant turns dropped (the array must start with a user turn); and guaranteed
+// to end with the latest guest message.
+function buildThreadMessages(thread, latestBody, cap = 12) {
+  const HOST_ROLES = new Set(['host', 'co-host', 'teammate']);
+  const roleOf = m => (HOST_ROLES.has(m.sender_role || m.sender_type) ? 'assistant' : 'user');
+  const latest = (latestBody || '').trim();
+
+  // Chronological order — sort defensively, the API order is not guaranteed.
+  const sorted = (thread || []).slice().sort((a, b) => (tsMs(a.created_at) || 0) - (tsMs(b.created_at) || 0));
+
+  let turns = [];
+  for (const m of sorted) {
+    const content = (m.body || '').trim();
+    if (!content) continue;                       // skip empty-body messages
+    turns.push({ role: roleOf(m), content });
+  }
+
+  // Guarantee the new guest message is the final user turn (in case the thread
+  // fetch lagged and didn't include it yet, or it isn't last).
+  const last = turns[turns.length - 1];
+  if (latest && (!last || last.role !== 'user' || last.content !== latest)) {
+    turns.push({ role: 'user', content: latest });
+  }
+
+  // Keep the last ~cap turns, merge consecutive same-role turns, then ensure the
+  // array starts with a user turn (Anthropic requires the first message be user).
+  turns = turns.slice(-cap);
+  const merged = [];
+  for (const t of turns) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === t.role) prev.content += `\n\n${t.content}`;
+    else merged.push({ role: t.role, content: t.content });
+  }
+  while (merged.length && merged[0].role !== 'user') merged.shift();
+  return merged;
+}
+
+async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null) {
   // Front-desk contingency detected by ANY means (single regex, fragment burst, or
   // classifier) → send the EXACT hardcoded reply, never Claude's freeform wording.
   // This catches split/fragmented requests that no single message matches.
@@ -1128,6 +1175,7 @@ async function draftReply(guestName, messageBody, propertyName, propertyId, conc
   const examples = propertyId ? findSimilarExamples(propertyId, messageBody) : [];
   const vaultEntry = propertyId ? vault.getVaultEntry(propertyId)?.master : null;
 
+  const guestFirst = (guestName || 'there').split(' ')[0];
   let systemPrompt;
 
   const JSON_INSTRUCTIONS = `
@@ -1140,6 +1188,7 @@ You MUST respond with a single valid JSON object — no markdown fences, no reas
 Confidence rules:
 - Set "confident": true when you can answer fully from the information provided.
 - Set "confident": false when you genuinely don't know the answer (e.g. specific codes, policies not in your context, third-party details).
+- If the guest asked a SPECIFIC question you cannot answer from the property details, knowledge base, or conversation thread, set "confident": false (escalate to a human) and set "reply" to "" — do NOT send a warm non-answer. A greeting or pleasantry with no real question is fine to answer confidently; an unanswered factual question is NOT.
 - NEVER invent facts. If unsure, set "confident": false and set "reply" to "".
 
 Common questions you CAN always answer confidently (set "confident": true):
@@ -1155,11 +1204,12 @@ Common questions you CAN always answer confidently (set "confident": true):
 Reply style — Marriott-style hospitality service (voice only; never change facts/policies):
 - Warm & gracious: make the guest feel genuinely welcomed and valued.
 - Polished and professional, yet warm — never stiff or robotic, and never overly casual/slangy.
-- Open with a brief, warm greeting using the guest's first name, then answer the question directly.
+- Greet the guest by first name ONLY on the first message of a conversation; on follow-ups, skip the greeting and answer directly.
 - Anticipate needs: when relevant, proactively offer a helpful related detail or extra — but do not dump unrelated info or recite check-in/house rules unless they relate to the question.
 - Concise and easy to read — typically 2–5 sentences; more only if the question genuinely needs it.
-- Always close with a gracious offer to help further (e.g. "Please don't hesitate to reach out if there's anything else I can do for you.").
+- Close warmly when it's natural, but do NOT repeat the same closing line on consecutive replies.
 - Do not add a name signature/sign-off.
+- You can see the full conversation. Never repeat a sentence you already sent. If the guest says you didn't answer, address their actual question.
 - Never invent facts — all policies, times, fees, and details must come from the information above.`;
 
   // Inject the concierge / event knowledge base so area questions answer from facts.
@@ -1177,7 +1227,7 @@ Reply style — Marriott-style hospitality service (voice only; never change fac
         examples.map(e => `Guest: "${e.guest}"\nYour past reply: "${e.host}"`).join('\n\n')
       : '';
 
-    systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host replying to a guest at "${propertyName}".
+    systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host replying to ${guestFirst}, a guest at "${propertyName}".
 
 HOST COMMUNICATION PROFILE (learned from real messages — match this style precisely):
 ${profileData.profile}
@@ -1195,7 +1245,7 @@ ${parkingSection}
 ${exampleBlock}
 ${JSON_INSTRUCTIONS}`;
   } else {
-    systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style.
+    systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style, replying to ${guestFirst}.
 
 Property: ${propertyName}
 Check-in: ${HOST_SETTINGS.checkin} | Check-out: ${HOST_SETTINGS.checkout}
@@ -1209,7 +1259,23 @@ ${parkingSection}
 ${JSON_INSTRUCTIONS}`;
   }
 
-  const raw = await callClaude(systemPrompt, `Guest ${guestName} says: "${messageBody}"`, 600);
+  // Conversation history: for reservation threads, pass the real prior turns so the
+  // agent sees what it already said and what the guest actually asked. Inquiries have
+  // no fetchable history (GET 405) → fall back to the legacy single-message form.
+  let promptInput = `Guest ${guestName} says: "${messageBody}"`;
+  if (resourceType === 'reservation' && resourceId) {
+    try {
+      const thread = await fetchMessagesForReservation(resourceId);
+      const messages = buildThreadMessages(thread, messageBody, 12);
+      if (messages.length) {
+        promptInput = messages;
+        console.log(`[draft] Thread history: ${messages.length} turn(s) for reservation ${resourceId}`);
+      }
+    } catch (e) {
+      console.warn(`[draft] thread fetch failed (${e.message}) — falling back to single message`);
+    }
+  }
+  const raw = await callClaude(systemPrompt, promptInput, 600);
 
   try {
     // Extract just the JSON object — ignore any reasoning text before or after it
@@ -1433,7 +1499,7 @@ app.post('/webhook/hospitable', (req, res, next) => {
     .catch(e => console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`));
 
   try {
-    const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId, false);
+    const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId, false, replyResourceId, replyResourceType);
     if (!confident || !reply) {
       console.log(`[webhook] Low confidence — escalated to host, no guest reply`);
       notifyHost({ guestName, messageBody, propertyName }).catch(console.error);
@@ -2675,4 +2741,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 
 // Exported for unit tests (see scripts/test-*.js). Importing this module does NOT
 // start the server thanks to the `require.main === module` guard around app.listen.
-module.exports = { detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX };
+module.exports = {
+  detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX,
+  buildThreadMessages, fetchMessagesForReservation, fetchReservationsForProperty,
+};
