@@ -809,7 +809,9 @@ async function notifyHostRaw(text) {
     if (!res.ok) throw new Error(`OpenPhone ${res.status}: ${await res.text()}`);
     console.log(`[notify] SMS sent via OpenPhone to ${to}: "${text.slice(0, 80)}"`);
   } catch (e) {
-    console.error(`[notify] SMS failed (${e.message}) — intended: "${text.slice(0, 120)}"`);
+    // LOUD on purpose: a failed host alert (e.g. OpenPhone 402 out-of-credits) must
+    // never be a quiet one-liner — this means the host was NOT notified at all.
+    console.error(`[notify] ❗❗ HOST ALERT NOT DELIVERED — OpenPhone SMS FAILED: ${e.message} | undelivered text: "${text.slice(0, 160)}"`);
   }
 }
 
@@ -926,6 +928,20 @@ const CONCIERGE_REGEX = new RegExp(
   // front-desk contingency — entry codes are handled via Hospitable's Schlage
   // integration, not by emailing the concierge. Only form / confirm / send-the-
   // reservation messages fire it.
+  // ── 2026-06-03: phrasings that slipped through the night of 2026-06-02 (44-min
+  // late concierge email). This is a front-desk/concierge high-rise — the desk
+  // checks guests in only after we send a form or supplementary email, so plain
+  // front-desk / lobby / room-number language is high-signal here even without an
+  // explicit "reservation/form" word. Promote these to direct triggers.
+  // front desk / concierge / reception co-occurring with a confirm/call/wait/ask intent
+  "|(?=[\\s\\S]*(?:front\\s+desk|concierge|reception))(?=[\\s\\S]*(?:confirm|call(?:ed|ing)?|waiting|wait\\b|asking|ask\\b))" +
+  // waiting / stuck / still in the lobby (or downstairs) — desk hasn't let them up
+  "|(?:waiting|stuck|still)\\s+(?:\\w+\\s+){0,3}?(?:in\\s+(?:the\\s+)?lobby|downstairs)" +
+  "|in\\s+the\\s+lobby\\b(?=[\\s\\S]*(?:waiting|still|stuck|can'?t|won'?t|let\\s+me))" +
+  // internal jargon: guest relaying our "update me in the spreadsheet" workflow
+  "|update\\s+(?:me|us)\\s+(?:in|on)\\s+(?:the\\s+)?spread\\s?sheet" +
+  // room-number question at/around check-in (the desk can't place the guest)
+  "|what'?s?\\s+(?:the\\s+|my\\s+)?room\\s+(?:number|#)|which\\s+room\\s+(?:am\\s+i|is)|what\\s+room\\s+(?:am\\s+i|number)" +
   // Compound: location word + access-denial word anywhere in the message
   "|(?=[\\s\\S]*(?:desk|lobby|reception))(?=[\\s\\S]*(?:can'?t|unable|no\\s+reservation|won'?t|wont|not\\s+letting))"
   ).replace(/'/g, "['’]"),  // accept straight ' and curly ’ apostrophes (mobile keyboards)

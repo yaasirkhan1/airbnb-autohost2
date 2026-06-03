@@ -69,11 +69,17 @@ async function resolveConciergeReply({ guestName, unitLabel, sendEmail, escalate
   try {
     await sendEmail();
     if (notifyAll && typeof notifySuccess === 'function') {
-      try { await notifySuccess(conciergeSentSms({ guestName, unitLabel })); } catch (_) { /* best-effort */ }
+      // best-effort, but NEVER silent — a swallowed host-SMS failure is how an
+      // out-of-credits alert went unnoticed. Log loudly at error level.
+      try { await notifySuccess(conciergeSentSms({ guestName, unitLabel })); }
+      catch (e) { console.error(`[concierge] ❗ host success-SMS FAILED (not delivered): ${e && e.message}`); }
     }
     return { ok: true, reply: conciergeGuestReply(guestName) };
   } catch (err) {
-    if (typeof escalate === 'function') { try { await escalate(err); } catch (_) { /* best-effort */ } }
+    if (typeof escalate === 'function') {
+      try { await escalate(err); }
+      catch (e) { console.error(`[concierge] ❗ host escalation-SMS FAILED (not delivered): ${e && e.message}`); }
+    }
     return { ok: false, reply: conciergeFailureReply(guestName), error: err };
   }
 }
