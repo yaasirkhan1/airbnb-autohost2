@@ -92,4 +92,15 @@ ok('World Cup dates are SKIPPED — engine returns no price, no write', () => {
   assert.ok(r.event && r.event.toLowerCase().includes('world cup'));
 });
 
+ok('skip wins over overlapping events inside the WC window (no leak dates)', () => {
+  // Jul 7: Ariana Grande overlaps the World Cup skip window — skip must take precedence.
+  const aria = computeNight(config, '4-L', '2026-07-07', FAR);
+  assert.strictEqual(aria.skip, true, `Jul 7 should skip, got event=${aria.event} price=${aria.price}`);
+  assert.strictEqual(aria.price, null);
+  // Jun 14: Atlanta Market Summer overlaps the WC start day — skip must take precedence.
+  const jun14 = computeNight(config, '21-I', '2026-06-14', FAR);
+  assert.strictEqual(jun14.skip, true, `Jun 14 should skip, got event=${jun14.event} price=${jun14.price}`);
+  assert.strictEqual(jun14.price, null);
+});
+
 console.log(`\n${pass} passed`);

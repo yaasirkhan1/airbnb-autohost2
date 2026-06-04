@@ -19,13 +19,20 @@ function daysBetween(fromYmd, toYmd) {
   return Math.round((b - a) / 86400000);
 }
 
-// Find an event covering this date (last match wins so later/more-specific entries override).
+// Find an event covering this date. A priceMode:"skip" event (e.g. World Cup, handled
+// separately) takes HARD precedence over any overlapping event so the skip window is
+// never priced — even if another event (Atlanta Market Summer 6/14, Ariana Grande 7/6–8)
+// overlaps it. Among non-skip events, last match wins (later/more-specific overrides).
 function eventFor(config, dateYmd) {
   let hit = null;
+  let skipHit = null;
   for (const ev of config.events || []) {
-    if (dateYmd >= ev.start && dateYmd <= ev.end) hit = ev;
+    if (dateYmd >= ev.start && dateYmd <= ev.end) {
+      if (ev.priceMode === 'skip') skipHit = ev;
+      else hit = ev;
+    }
   }
-  return hit;
+  return skipHit || hit;
 }
 
 // Resolve a min-stay spec: number, or [farOut, near] decaying by lead time.
