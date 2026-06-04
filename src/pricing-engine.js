@@ -73,6 +73,21 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
   const layers = {};
   const ev = eventFor(config, dateYmd);
 
+  // ---- SKIP zone: engine must not touch these dates (e.g. World Cup, handled separately) ----
+  if (ev && ev.priceMode === 'skip') {
+    return {
+      unit: unitLabel,
+      date: dateYmd,
+      skip: true,
+      price: null,
+      minStay: null,
+      event: ev.name,
+      booked: isBooked,
+      leadDays: daysBetween(todayYmd, dateYmd),
+      layers: { skip: ev.name }
+    };
+  }
+
   // ---- Price ----
   let price;
   if (ev && ev.priceMode === 'set') {

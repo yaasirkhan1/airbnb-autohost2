@@ -93,7 +93,7 @@ async function pushUnit(label, rows) {
   console.log(`PRICING ENGINE RUN — ${start} → ${end}  | units: ${unitLabels.join(', ')} | swing flag: >${args.swing}% | ${args.confirm ? 'CONFIRM (push)' : 'DRY RUN'}`);
   console.log(`today=${today}\n`);
 
-  let totalNights = 0, totalSwings = 0, totalBooked = 0;
+  let totalNights = 0, totalSwings = 0, totalBooked = 0, totalSkipped = 0;
   const pushQueue = [];
 
   for (const label of unitLabels) {
@@ -105,6 +105,16 @@ async function pushUnit(label, rows) {
     for (let date = start; date <= end; date = addDays(date, 1)) {
       const c = cal[date] || { price: null, booked: false, minStay: null };
       const res = computeNight(config, label, date, { todayYmd: today, isBooked: c.booked });
+
+      // Engine SKIP zone (e.g. World Cup, handled separately): show it, NEVER queue it for
+      // a push. Because skip dates never enter `rows`, they can't be written even with --confirm.
+      if (res.skip) {
+        const dow = DOW[new Date(date + 'T00:00:00Z').getUTCDay()];
+        console.log(`  ${date} ${dow}  SKIP (${res.event} — handled separately)` + (c.booked ? '  [BOOKED]' : ''));
+        totalSkipped++;
+        continue;
+      }
+
       const cur = c.price;
       const delta = cur != null ? res.price - cur : null;
       const pct = cur ? Math.round((delta / cur) * 100) : null;
@@ -125,7 +135,7 @@ async function pushUnit(label, rows) {
   }
 
   console.log(`\n================ SUMMARY ================`);
-  console.log(`${totalNights} unit-nights | ${totalSwings} flagged >${args.swing}% | ${totalBooked} already booked`);
+  console.log(`${totalNights} unit-nights priced | ${totalSwings} flagged >${args.swing}% | ${totalBooked} already booked | ${totalSkipped} SKIPPED (World Cup, never pushed)`);
 
   if (!args.confirm) {
     console.log('\nDRY RUN — nothing written to Hospitable.');

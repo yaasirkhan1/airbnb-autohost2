@@ -85,4 +85,11 @@ ok('min-stay decay: [4,3] gives 4 far out, 3 near', () => {
   assert.strictEqual(resolveMinStay([4,3], 5), 3);
 });
 
+ok('World Cup dates are SKIPPED — engine returns no price, no write', () => {
+  const r = computeNight(config, '4-L', '2026-07-15', FAR); // WC semifinal day
+  assert.strictEqual(r.skip, true, 'should be skip');
+  assert.strictEqual(r.price, null, `price should be null, got ${r.price}`);
+  assert.ok(r.event && r.event.toLowerCase().includes('world cup'));
+});
+
 console.log(`\n${pass} passed`);

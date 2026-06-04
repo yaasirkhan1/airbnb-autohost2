@@ -44,7 +44,7 @@
 
   "_eventComment": "Event overrides. priceMode 'set' = fixed price; 'mult' = multiplier on base. minStay can be a single number or [farOut, near] for the global decay-min-stay rule. perUnitAdj applies quality offsets. See ATL_Event_Spine for full list; high-confidence anchors loaded here.",
   "events": [
-    { "name": "World Cup (see WC doc for full daily detail)", "start": "2026-06-14", "end": "2026-07-16", "tier": "T1", "priceMode": "see_wc_doc", "note": "Loaded separately from World_Cup_2026_Pricing_Strategy.md" },
+    { "name": "World Cup (HANDS OFF — engine must SKIP these dates entirely)", "start": "2026-06-14", "end": "2026-07-16", "tier": "T1", "priceMode": "skip", "note": "Engine writes NOTHING for these dates. World Cup pricing is loaded separately from World_Cup_2026_Pricing_Strategy.md and verified independently. The engine must leave these calendar nights untouched." },
 
     { "name": "Atlanta Market Winter", "start": "2026-01-13", "end": "2026-01-19", "tier": "T1", "priceMode": "set", "price1BR": 199, "price2BR": 235, "minStay": 8 },
     { "name": "IPPE poultry/meat", "start": "2026-01-27", "end": "2026-01-29", "tier": "T1", "priceMode": "mult", "mult": 1.7, "minStay": [4,3] },
