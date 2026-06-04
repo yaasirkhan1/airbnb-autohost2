@@ -8,6 +8,7 @@ const cron         = require('node-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { savePending, loadPending, partitionPending } = require('./pending-store');
+const { decideAlert, loadAlerts, saveAlerts } = require('./alert-store');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
@@ -80,8 +81,15 @@ const propertyHistory = new Map();   // propertyId -> [{ guest, host, topic }]
 // Polling state
 const seenMessageIds = new Set(); // dedup between webhook + polling
 const recentMsgsByConvo = new Map(); // conversation_id → recent guest msgs (for fragment-burst detection, incl. booking-less)
+const alertState = loadAlerts(); // conversationKey → host-alert throttle state (persisted to volume)
 let knownPropertyIds  = [];       // populated after initAllPropertyProfiles
 let pollingSince      = null;     // ISO timestamp — only reply to messages after this
+
+// "First responder wins": default 0 = no artificial delay — the auto-responder sends
+// immediately, and right before sending re-checks the Hospitable thread and backs off
+// if the host already replied (any channel). Set a small buffer here (e.g. 1 = 60s)
+// only if Airbnb-app → Hospitable sync lag ever causes double-replies.
+const REPLY_DELAY_MINUTES = Number(process.env.REPLY_DELAY_MINUTES) || 0;
 
 const HOST_SETTINGS = {
   name: process.env.HOST_NAME || 'Your Host',
@@ -90,9 +98,12 @@ const HOST_SETTINGS = {
   checkout: process.env.CHECKOUT_TIME || '11:00 AM',
   houseRules: process.env.HOUSE_RULES || 'No smoking, no parties, quiet hours after 10pm.',
   extraContext: process.env.EXTRA_CONTEXT || '',
-  delayMinutes: parseInt(process.env.REPLY_DELAY_MINUTES || '5'),
+  delayMinutes: REPLY_DELAY_MINUTES,
   autosend: process.env.AUTOSEND !== 'false',
 };
+
+// Hospitable sender roles that count as "the host replied" (i.e. me / my team).
+const HOST_REPLY_ROLES = new Set(['host', 'co-host', 'teammate']);
 
 // ─── Atlanta demand-based pricing engine — config & state ────────────────────
 
@@ -525,7 +536,7 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
 
       // Maintenance emergency SMS side-effect — notify host immediately
       if (MAINTENANCE_EMERGENCY_REGEX.test(body)) {
-        notifyHost({ guestName, messageBody: body, propertyName })
+        notifyHost({ guestName, messageBody: body, propertyName, conversationKey: resourceId, resourceId, resourceType })
           .catch(e => console.error(`[maintenance] SMS failed: ${e.message}`));
       }
 
@@ -552,7 +563,7 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
         const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId, false, resourceId, resourceType);
         if (!confident || !reply) {
           console.log(`[poll/${tag}] Low confidence — escalated to host, no guest reply`);
-          notifyHost({ guestName, messageBody: body, propertyName }).catch(console.error);
+          notifyHost({ guestName, messageBody: body, propertyName, conversationKey: resourceId, resourceId, resourceType }).catch(console.error);
         } else {
           scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
         }
@@ -797,6 +808,31 @@ async function runConciergeContingency({ guestName, propertyId, resourceId, reso
   return res;
 }
 
+// ─── Host-reply detection ─────────────────────────────────────────────────────
+
+// Re-fetch a thread from Hospitable and report whether the host (me / my team)
+// posted a message AFTER the guest's most recent message. Used to (a) skip an
+// auto-reply when I've already answered, and (b) mark a conversation "resolved"
+// so host-alert SMS stops. A host message counts when sender_role/sender_type is
+// one of HOST_REPLY_ROLES; the guest's latest is the newest non-host message.
+async function hostRepliedAfterGuest(resourceId, resourceType = 'reservation') {
+  const seg = resourceType === 'inquiry' ? 'inquiries' : 'reservations';
+  const data = await hospGet(`/${seg}/${resourceId}/messages?per_page=50`);
+  const msgs = parseMessages(data);
+  let lastGuest = 0, lastHost = 0, lastHostAt = null;
+  for (const m of msgs) {
+    const t = tsMs(m.created_at);
+    if (!t || Number.isNaN(t)) continue;
+    const role = m.sender_role || m.sender_type || '';
+    if (HOST_REPLY_ROLES.has(role)) {
+      if (t > lastHost) { lastHost = t; lastHostAt = m.created_at; }
+    } else if (t > lastGuest) {
+      lastGuest = t; // newest non-host message = guest's latest
+    }
+  }
+  return { replied: lastGuest > 0 && lastHost > lastGuest, lastHostAt, lastGuest, lastHost };
+}
+
 // ─── Host notifications ───────────────────────────────────────────────────────
 
 // Send a raw SMS to the host exactly as written (no "needs your reply" wrapper).
@@ -825,8 +861,47 @@ async function notifyHostRaw(text) {
   }
 }
 
-async function notifyHost({ guestName, messageBody, propertyName }) {
-  return notifyHostRaw(`⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Message: "${messageBody.slice(0, 100)}"`);
+// Throttled host alert, keyed per conversation (conversationKey). Sends ONE alert
+// when a conversation first needs a reply, suppresses for 15 min, then sends up to
+// 2 collapsed reminders if the guest keeps messaging AND the host hasn't replied,
+// then goes silent; a 6h+ quiet gap resets the cycle. If resourceId is provided we
+// re-check the Hospitable thread first — a detected host reply marks the convo
+// resolved and stops alerts. Without a conversationKey (e.g. manual /api/notify),
+// falls back to the original always-send behavior.
+async function notifyHost({ guestName, messageBody, propertyName, conversationKey, resourceId, resourceType = 'reservation' }) {
+  const firstAlertText = `⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Message: "${messageBody.slice(0, 100)}"`;
+  if (!conversationKey) return notifyHostRaw(firstAlertText);
+
+  let hostReplied = false;
+  if (resourceId) {
+    try {
+      ({ replied: hostReplied } = await hostRepliedAfterGuest(resourceId, resourceType));
+    } catch (e) {
+      // On a lookup error, assume NOT replied so we don't wrongly silence alerts.
+      console.warn(`[notify] host-reply check failed for ${conversationKey} (${e.message}) — assuming not replied`);
+    }
+  }
+
+  const now = Date.now();
+  const { action, count, state } = decideAlert(alertState.get(conversationKey), now, hostReplied);
+  alertState.set(conversationKey, state);
+  saveAlerts(alertState);
+
+  switch (action) {
+    case 'first':
+      return notifyHostRaw(firstAlertText);
+    case 'reminder':
+      return notifyHostRaw(`⚠ AutoHost: ${guestName} — ${count} new message${count === 1 ? '' : 's'}, still needs reply`);
+    case 'resolved':
+      console.log(`[notify] host already replied — ${conversationKey} resolved, no alert sent`);
+      return;
+    case 'suppress':
+      console.log(`[notify] within 15-min window — alert suppressed for ${conversationKey} (pending ${state.pendingCount})`);
+      return;
+    case 'silent':
+      console.log(`[notify] max reminders reached or resolved — silent for ${conversationKey}`);
+      return;
+  }
 }
 
 // ─── Hardcoded responses — bypass Claude for common predictable questions ─────
@@ -1456,7 +1531,8 @@ app.post('/webhook/hospitable', (req, res, next) => {
   if (!target) {
     // Could not map this thread to a reservation or inquiry → escalate, never silently drop.
     console.warn(`[webhook] Unresolvable thread (reservation_id/inquiry_id null, conversation_id="${conversationId}" matched no reservation or inquiry) — escalating to host by SMS.`);
-    notifyHost({ guestName, messageBody, propertyName }).catch(console.error);
+    // No reservation/inquiry to re-fetch → throttle by conversationId, skip host-reply check (no resourceId).
+    notifyHost({ guestName, messageBody, propertyName, conversationKey: conversationId }).catch(console.error);
     return;
   }
 
@@ -1502,7 +1578,7 @@ app.post('/webhook/hospitable', (req, res, next) => {
     const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId, false, replyResourceId, replyResourceType);
     if (!confident || !reply) {
       console.log(`[webhook] Low confidence — escalated to host, no guest reply`);
-      notifyHost({ guestName, messageBody, propertyName }).catch(console.error);
+      notifyHost({ guestName, messageBody, propertyName, conversationKey: replyResourceId, resourceId: replyResourceId, resourceType: replyResourceType }).catch(console.error);
     } else {
       scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
       console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
@@ -1516,7 +1592,11 @@ app.post('/webhook/hospitable', (req, res, next) => {
 
 function scheduleReply(resourceId, guestName, originalMessage, draftedReply, propertyName, propertyId, resourceType = 'reservation') {
   const id = crypto.randomUUID();
-  const delayMs = HOST_SETTINGS.delayMinutes * 60 * 1000;
+  // "First responder wins": default REPLY_DELAY_MINUTES=0 sends immediately (no stacked
+  // delay). Regardless of the delay, dispatchPendingReply re-checks the thread right
+  // before sending and skips if the host already replied. Raise REPLY_DELAY_MINUTES
+  // to add a small sync-lag buffer.
+  const delayMs = REPLY_DELAY_MINUTES * 60 * 1000;
   const sendAt = Date.now() + delayMs;
 
   const entry = {
@@ -1529,7 +1609,18 @@ function scheduleReply(resourceId, guestName, originalMessage, draftedReply, pro
   entry.timer = setTimeout(() => dispatchPendingReply(id), delayMs);
   pendingReplies.set(id, entry);
   savePending(pendingReplies); // persist so a queued reply survives a restart
-  console.log(`[scheduler] Reply queued for ${guestName} — sends in ${HOST_SETTINGS.delayMinutes}min`);
+  console.log(`[scheduler] Reply queued for ${guestName} — sends in ${REPLY_DELAY_MINUTES}min (after host-reply re-check)`);
+}
+
+// Mark a conversation resolved in the alert-throttle state because the host has
+// replied — so any pending host-alert reminders stop too. Best-effort/persisted.
+function markConversationResolved(conversationKey, now = Date.now()) {
+  if (!conversationKey) return;
+  const prev = alertState.get(conversationKey) || {
+    firstAlertAt: now, lastAlertAt: now, reminderCount: 0, pendingCount: 0, lastGuestMsgAt: now,
+  };
+  alertState.set(conversationKey, { ...prev, resolved: true, lastHostReplyAt: now, pendingCount: 0 });
+  saveAlerts(alertState);
 }
 
 // Send one queued reply, record it, and remove it from the queue (then persist
@@ -1537,6 +1628,26 @@ function scheduleReply(resourceId, guestName, originalMessage, draftedReply, pro
 async function dispatchPendingReply(id) {
   const current = pendingReplies.get(id);
   if (!current || current.status !== 'pending') return;
+
+  // Re-check the thread immediately before sending: if I (the host) already replied
+  // after the guest's latest message — e.g. typed in the Airbnb app during the delay
+  // — skip the auto-reply and mark the conversation resolved (also stops SMS alerts).
+  try {
+    const { replied } = await hostRepliedAfterGuest(current.resourceId, current.resourceType);
+    if (replied) {
+      current.status = 'skipped';
+      console.log(`[skipped] host already replied — not sending auto-reply to ${current.guestName} via ${current.resourceType} ${current.resourceId}`);
+      markConversationResolved(current.resourceId);
+      replyLog.unshift({ ...current });
+      if (replyLog.length > 100) replyLog.pop();
+      pendingReplies.delete(id);
+      savePending(pendingReplies);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[send] host-reply re-check failed (${e.message}) — proceeding with send`);
+  }
+
   current.status = 'sending';
   try {
     await sendToHospitable(current.resourceId, current.editedReply, current.resourceType);
@@ -2744,4 +2855,5 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX,
   buildThreadMessages, fetchMessagesForReservation, fetchReservationsForProperty,
+  hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
 };
