@@ -11,3 +11,6 @@ scripts/properties-list.json
 
 # real door codes — never commit (use ENTRY_CODES_JSON env on Railway)
 config/entry-codes.json
+
+# local-only Claude Code permission overrides
+.claude/settings.local.json

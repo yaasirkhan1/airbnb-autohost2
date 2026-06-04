@@ -9,6 +9,7 @@ const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { savePending, loadPending, partitionPending } = require('./pending-store');
 const { decideAlert, loadAlerts, saveAlerts } = require('./alert-store');
+const { parseDraftReply } = require('./draft-parse');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
@@ -1392,18 +1393,16 @@ ${JSON_INSTRUCTIONS}`;
   }
   const raw = await callClaude(systemBlocks, promptInput, 600);
 
-  try {
-    // Extract just the JSON object — ignore any reasoning text before or after it
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('no JSON object found');
-    const parsed = JSON.parse(jsonMatch[0]);
-    const reply = (parsed.reply || '').trim();
-    const confident = parsed.confident !== false && reply.length > 0;
-    return { reply: reply || null, confident };
-  } catch (e) {
-    console.warn('[draft] Claude returned non-JSON — escalating to host. Raw:', raw.slice(0, 120));
-    return { reply: null, confident: false };
+  // Tiered parse: valid JSON envelope → use it; plain prose (no JSON) → recover it as
+  // the reply; empty/refusal or malformed JSON → escalate. (Fixes the bug where any
+  // non-JSON output was escalated, dropping a real reply.)
+  const { reply, confident, source } = parseDraftReply(raw);
+  if (source === 'prose-fallback') {
+    console.log('[draft] Claude returned prose (no JSON envelope) — recovering it as the reply');
+  } else if (!confident) {
+    console.warn(`[draft] draft not usable (${source}) — escalating to host. Raw: ${String(raw).slice(0, 120)}`);
   }
+  return { reply, confident };
 }
 
 // ─── Cancellation follow-up ───────────────────────────────────────────────────
