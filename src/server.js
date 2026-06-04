@@ -105,6 +105,11 @@ const HOST_SETTINGS = {
 // Hospitable sender roles that count as "the host replied" (i.e. me / my team).
 const HOST_REPLY_ROLES = new Set(['host', 'co-host', 'teammate']);
 
+// Claude models. Guest replies (draftReply) use the high-quality model; the bulk
+// profile-building pass uses the cheaper/faster Haiku since it just summarizes style.
+const REPLY_MODEL   = 'claude-opus-4-8';
+const PROFILE_MODEL = 'claude-haiku-4-5';
+
 // ─── Atlanta demand-based pricing engine — config & state ────────────────────
 
 const ATLANTA_1BR_IDS = [
@@ -288,7 +293,9 @@ Return a detailed profile in plain text under these headings:
 - Recurring info they always mention
 - Things they never say / avoid
 - Overall personality as a host`,
-    `Here are real message exchanges for the property "${propertyName}". Learn this host's communication style:\n\n${historyText}`
+    `Here are real message exchanges for the property "${propertyName}". Learn this host's communication style:\n\n${historyText}`,
+    800,
+    PROFILE_MODEL,
   );
 
   propertyHistory.set(propertyId, pairs);
@@ -747,23 +754,34 @@ async function runPricingEngine() {
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
 
-async function callClaude(systemPrompt, userMsgOrMessages, maxTokens = 800) {
+async function callClaude(systemPrompt, userMsgOrMessages, maxTokens = 800, model = REPLY_MODEL) {
   // Accept either a single string (legacy callers) or a full messages array
   // (conversation history). A string is wrapped as one user turn, exactly as before.
   const messages = Array.isArray(userMsgOrMessages)
     ? userMsgOrMessages
     : [{ role: 'user', content: userMsgOrMessages }];
+
+  // Prompt caching: callers may pass `system` as a pre-built array of content blocks
+  // with their own cache_control placement (see draftReply — large stable block first,
+  // volatile per-message content after the breakpoint). A plain string is wrapped as a
+  // single ephemeral-cached block. Caching is prefix-based: only content up to the
+  // cache_control marker is cached; the messages (per-request delta) are always fresh.
+  const system = Array.isArray(systemPrompt)
+    ? systemPrompt
+    : [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }];
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': process.env.ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31, extended-cache-ttl-2025-04-11',
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-8',
+      model,
       max_tokens: maxTokens,
-      system: systemPrompt,
+      system,
       messages,
     }),
   });
@@ -772,6 +790,11 @@ async function callClaude(systemPrompt, userMsgOrMessages, maxTokens = 800) {
     throw new Error(`Claude API ${response.status}: ${err}`);
   }
   const data = await response.json();
+  // Surface cache effectiveness so we can confirm the big system block is being reused.
+  const u = data.usage;
+  if (u && (u.cache_read_input_tokens || u.cache_creation_input_tokens)) {
+    console.log(`[claude] ${model} cache read=${u.cache_read_input_tokens || 0} write=${u.cache_creation_input_tokens || 0} fresh=${u.input_tokens || 0}`);
+  }
   return data.content?.[0]?.text || '';
 }
 
@@ -1251,7 +1274,6 @@ async function draftReply(guestName, messageBody, propertyName, propertyId, conc
   const vaultEntry = propertyId ? vault.getVaultEntry(propertyId)?.master : null;
 
   const guestFirst = (guestName || 'there').split(' ')[0];
-  let systemPrompt;
 
   const JSON_INSTRUCTIONS = `
 You MUST respond with a single valid JSON object — no markdown fences, no reasoning text, no extra text before or after:
@@ -1296,13 +1318,24 @@ Reply style — Marriott-style hospitality service (voice only; never change fac
   // lean otherwise). Replaces the old hardcoded PARKING_REPLY one-liner branch.
   const parkingSection = isParkingQuestion(messageBody) ? PARKING_SECTION : '';
 
-  if (profileData?.profile) {
-    const exampleBlock = examples.length
-      ? `\nRelevant past exchanges for style reference:\n` +
-        examples.map(e => `Guest: "${e.guest}"\nYour past reply: "${e.host}"`).join('\n\n')
-      : '';
+  // Prompt caching split. The system prompt is built as TWO blocks:
+  //   1. stableSystem — large, per-property/global-static content (host profile,
+  //      property details, local-area knowledge base, JSON contract). Marked with
+  //      cache_control so it's cached and reused across messages/guests of a property.
+  //   2. dynamicSystem — per-message/per-guest content placed AFTER the breakpoint so
+  //      it never invalidates the cached prefix: the guest's first name, the parking
+  //      section (only present on parking questions), and the style examples (selected
+  //      by keyword similarity to THIS message, so they change every message).
+  // Caching is prefix-based — any volatile byte inside the cached block would bust it,
+  // which is why guestFirst/parking/examples are deliberately kept out of stableSystem.
+  const exampleBlock = examples.length
+    ? `\nRelevant past exchanges for style reference:\n` +
+      examples.map(e => `Guest: "${e.guest}"\nYour past reply: "${e.host}"`).join('\n\n')
+    : '';
 
-    systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host replying to ${guestFirst}, a guest at "${propertyName}".
+  let stableSystem;
+  if (profileData?.profile) {
+    stableSystem = `You are ${HOST_SETTINGS.name}, an Airbnb host replying to a guest at "${propertyName}".
 
 HOST COMMUNICATION PROFILE (learned from real messages — match this style precisely):
 ${profileData.profile}
@@ -1316,11 +1349,9 @@ ${vaultEntry?.guest_access ? `- Guest access / WiFi: ${vaultEntry.guest_access}`
 ${vaultEntry?.getting_around ? `- Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `- Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
-${parkingSection}
-${exampleBlock}
 ${JSON_INSTRUCTIONS}`;
   } else {
-    systemPrompt = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style, replying to ${guestFirst}.
+    stableSystem = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style.
 
 Property: ${propertyName}
 Check-in: ${HOST_SETTINGS.checkin} | Check-out: ${HOST_SETTINGS.checkout}
@@ -1330,9 +1361,18 @@ ${vaultEntry?.guest_access ? `Guest access / WiFi: ${vaultEntry.guest_access}` :
 ${vaultEntry?.getting_around ? `Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
-${parkingSection}
 ${JSON_INSTRUCTIONS}`;
   }
+
+  // Volatile per-message content — AFTER the cache breakpoint (never cached).
+  const dynamicSystem = [
+    `You are now replying to ${guestFirst}.`,
+    parkingSection,
+    exampleBlock,
+  ].filter(s => s && s.trim()).join('\n');
+
+  const systemBlocks = [{ type: 'text', text: stableSystem, cache_control: { type: 'ephemeral', ttl: '1h' } }];
+  if (dynamicSystem.trim()) systemBlocks.push({ type: 'text', text: dynamicSystem });
 
   // Conversation history: for reservation threads, pass the real prior turns so the
   // agent sees what it already said and what the guest actually asked. Inquiries have
@@ -1350,7 +1390,7 @@ ${JSON_INSTRUCTIONS}`;
       console.warn(`[draft] thread fetch failed (${e.message}) — falling back to single message`);
     }
   }
-  const raw = await callClaude(systemPrompt, promptInput, 600);
+  const raw = await callClaude(systemBlocks, promptInput, 600);
 
   try {
     // Extract just the JSON object — ignore any reasoning text before or after it
