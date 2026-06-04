@@ -26,6 +26,13 @@ ok('weekend gets soft $99 floor on normal (non-event) Fri/Sat far out', () => {
   assert.ok(r.price >= 99, `price ${r.price}`);
 });
 
+ok('2BR (21-I) gets the $127 weekend soft floor on a normal Fri/Sat far out', () => {
+  const r = computeNight(config, '21-I', '2026-10-24', FAR); // Saturday, no event
+  assert.strictEqual(r.event, null);
+  assert.strictEqual(r.floorUsed, 127, `floorUsed ${r.floorUsed}`);
+  assert.ok(r.price >= 127, `price ${r.price}`);
+});
+
 ok('Sun/Mon/Tue no soft floor, can sit near hard floor when decayed', () => {
   // Monday near date, unbooked -> decay applies, no weekend soft floor, no event
   const near = { todayYmd: '2026-10-19', isBooked: false };

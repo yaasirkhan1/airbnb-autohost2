@@ -138,9 +138,12 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
   const hardFloor = unit.floor;
   let floorUsed = hardFloor;
   if (isWeekend && !ev) {
-    // soft weekend floor applies on normal weekends; releases near the date if vacant
+    // soft weekend floor applies on normal weekends; releases near the date if vacant.
+    // softWeekendFloor may be a single number (legacy) or a per-type map { "1BR": .., "2BR": .. }.
     const released = (!isBooked) && (leadDays <= (config.softFloorReleaseDaysOut || 2));
-    if (!released) floorUsed = Math.max(hardFloor, config.softWeekendFloor || hardFloor);
+    const swf = config.softWeekendFloor;
+    const swfVal = (swf && typeof swf === 'object') ? swf[unit.type] : swf;
+    if (!released) floorUsed = Math.max(hardFloor, swfVal || hardFloor);
   }
   if (price < floorUsed) price = floorUsed;
 
