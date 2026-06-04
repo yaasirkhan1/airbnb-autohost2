@@ -47,6 +47,9 @@ jobs:
           OPENPHONE_FROM_NUMBER: ${{ secrets.OPENPHONE_FROM_NUMBER }}
           ALERT_PHONE: ${{ secrets.ALERT_PHONE }}
           CLEANER_PHONE: ${{ secrets.CLEANER_PHONE }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           STATE_FILE: monitor-state.json
         run: node monitor/health-monitor.js
 

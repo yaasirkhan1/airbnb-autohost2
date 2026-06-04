@@ -23,9 +23,11 @@
 // Heartbeat: one "✅ all systems normal" SMS per ET calendar day (first all-clear
 // run at/after 09:00 ET).
 //
-// Alert-channel caveat: alerts go out over OpenPhone, so if OpenPhone itself is out
-// of credits the SMS can't be delivered. In that case the script exits non-zero so
-// GitHub's native "scheduled run failed" email reaches you out-of-band.
+// Dual alert channels: every alert AND the daily heartbeat go out over BOTH OpenPhone
+// SMS and email (Resend HTTP API) so an OpenPhone outage can't blind you. An issue is
+// considered delivered (and deduped) if EITHER channel succeeds. Only when BOTH fail
+// does the script exit non-zero, so GitHub's "scheduled run failed" email is the
+// last-resort out-of-band fallback.
 
 const fs = require('fs');
 
@@ -37,11 +39,14 @@ const {
   OPENPHONE_FROM_NUMBER,
   ALERT_PHONE,
   CLEANER_PHONE,
+  RESEND_API_KEY,
+  RESEND_FROM,
+  ALERT_EMAIL,
   STATE_FILE = 'monitor-state.json',
   GITHUB_STEP_SUMMARY,
 } = process.env;
 
-const required = { HEALTH_URL, APP_API_SECRET, ANTHROPIC_API_KEY, OPENPHONE_API_KEY, OPENPHONE_FROM_NUMBER, ALERT_PHONE, CLEANER_PHONE };
+const required = { HEALTH_URL, APP_API_SECRET, ANTHROPIC_API_KEY, OPENPHONE_API_KEY, OPENPHONE_FROM_NUMBER, ALERT_PHONE, CLEANER_PHONE, RESEND_API_KEY, RESEND_FROM, ALERT_EMAIL };
 const missing = Object.entries(required).filter(([, v]) => !v).map(([k]) => k);
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -78,6 +83,27 @@ async function sendSms(content) {
     return { ok: true };
   } catch (e) { return { ok: false, status: 0, body: e.message }; }
 }
+
+async function sendEmail(subject, text) {
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: RESEND_FROM, to: [ALERT_EMAIL], subject, text }),
+    });
+    if (!r.ok) return { ok: false, status: r.status, body: (await r.text()).slice(0, 200) };
+    return { ok: true };
+  } catch (e) { return { ok: false, status: 0, body: e.message }; }
+}
+
+// Deliver over BOTH channels. "Delivered" if EITHER succeeds — so an OpenPhone outage
+// (or a Resend outage) alone never blinds you. Returns per-channel status for logging.
+async function notify(text, subject) {
+  const sms = await sendSms(text);
+  const email = await sendEmail(subject || 'AutoHost alert', text);
+  return { smsOk: sms.ok, smsStatus: sms.status, emailOk: email.ok, emailStatus: email.status, anyOk: sms.ok || email.ok };
+}
+const chan = r => `${r.smsOk ? 'sms✓' : 'sms✗'}+${r.emailOk ? 'email✓' : 'email✗'}`;
 
 // ─── checks ─────────────────────────────────────────────────────────────────
 
@@ -176,20 +202,23 @@ async function checkCleaningSent(etDate) {
   let deliveryFailed = false, openphoneOut = false;
   for (const it of issues) {
     if (state.activeIssues[it.key]) { note(`still active (already alerted): ${it.key}`); continue; }
-    const res = await sendSms(it.msg);
-    if (res.ok) { state.activeIssues[it.key] = new Date().toISOString(); note(`ALERT SENT: ${it.key}`); }
-    else { deliveryFailed = true; if (res.status === 402) openphoneOut = true; note(`ALERT UNDELIVERED (${res.status}): ${it.key} — ${res.body}`); }
+    const res = await notify(it.msg, `🚨 AutoHost: ${it.key}`);
+    if (res.smsStatus === 402) openphoneOut = true;
+    if (res.anyOk) { state.activeIssues[it.key] = new Date().toISOString(); note(`ALERT SENT (${chan(res)}): ${it.key}`); }
+    else { deliveryFailed = true; note(`ALERT UNDELIVERED (sms ${res.smsStatus} / email ${res.emailStatus}): ${it.key}`); }
   }
 
-  // 5 — OpenPhone credit exhaustion is whatever made a send return 402
-  if (openphoneOut) note('🚨 OpenPhone credits exhausted — alert SMS could not be delivered (relying on GitHub failure email)');
+  // 5 — OpenPhone credit exhaustion is whatever made an SMS send return 402. Email
+  // still carries the alert, so this is informational unless email also failed.
+  if (openphoneOut) note('⚠ OpenPhone credits exhausted — SMS channel down (alerts still delivered by email)');
 
   // ─── daily heartbeat ───
   if (issues.length === 0 && !deliveryFailed) {
     if (state.lastHeartbeatDate !== etDate && etHour >= 9) {
-      const res = await sendSms('✅ AutoHost: all systems normal');
-      if (res.ok) { state.lastHeartbeatDate = etDate; note('heartbeat sent'); }
-      else { deliveryFailed = true; if (res.status === 402) openphoneOut = true; note(`heartbeat UNDELIVERED (${res.status})`); }
+      const res = await notify('✅ AutoHost: all systems normal', '✅ AutoHost: all systems normal');
+      if (res.smsStatus === 402) openphoneOut = true;
+      if (res.anyOk) { state.lastHeartbeatDate = etDate; note(`heartbeat sent (${chan(res)})`); }
+      else { deliveryFailed = true; note(`heartbeat UNDELIVERED (sms ${res.smsStatus} / email ${res.emailStatus})`); }
     } else { note('all clear (no heartbeat due)'); }
   }
 
