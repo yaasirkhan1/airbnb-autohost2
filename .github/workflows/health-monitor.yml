@@ -1,0 +1,60 @@
+name: Health Monitor
+
+# Detect-and-notify watchdog for the AutoHost app. Runs independently of Railway.
+# NOTE: scheduled workflows only run from the repository's DEFAULT branch. While this
+# file lives only on the feat/health-monitor branch it will NOT run on a schedule.
+# It activates when merged to main. Use the "Run workflow" button to test manually.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # every 15 minutes (UTC)
+  workflow_dispatch: {}        # manual trigger for testing before relying on the schedule
+
+permissions:
+  contents: read
+
+# Never let two runs overlap and race the shared state cache.
+concurrency:
+  group: health-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Restore the dedup/heartbeat state written by the previous run. Rolling-key
+      # pattern: each run saves under a unique key; restore-keys grabs the newest prior.
+      - name: Restore monitor state
+        uses: actions/cache/restore@v4
+        with:
+          path: monitor-state.json
+          key: monitor-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            monitor-state-
+
+      - name: Run health checks
+        env:
+          HEALTH_URL: ${{ secrets.HEALTH_URL }}
+          APP_API_SECRET: ${{ secrets.APP_API_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENPHONE_API_KEY: ${{ secrets.OPENPHONE_API_KEY }}
+          OPENPHONE_FROM_NUMBER: ${{ secrets.OPENPHONE_FROM_NUMBER }}
+          ALERT_PHONE: ${{ secrets.ALERT_PHONE }}
+          CLEANER_PHONE: ${{ secrets.CLEANER_PHONE }}
+          STATE_FILE: monitor-state.json
+        run: node monitor/health-monitor.js
+
+      # Persist updated state even when the check step exits non-zero (undelivered
+      # alert), so dedup/heartbeat survive. Unique key => always a fresh save.
+      - name: Save monitor state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: monitor-state.json
+          key: monitor-state-${{ github.run_id }}-${{ github.run_attempt }}
