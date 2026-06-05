@@ -34,7 +34,19 @@ const PATHS = {
   snapshots: path.join(DATA, 'snapshots'),
 };
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
-const alert = (type, detail, extra) => R.emitAlert(R.buildAlert(type, detail, extra), { logFile: PATHS.alerts });
+const { buildAlertSender } = require('../src/alert-notify');
+const alertSender = buildAlertSender(process.env);   // real SMS via OpenPhone (NOTIFY_PHONE)
+const pendingAlerts = [];
+// Every alert is logged AND sent (SMS); accumulate the send promises so we can flush them
+// before the process exits (a CLI that exits immediately would otherwise drop in-flight sends).
+const alert = (type, detail, extra) => {
+  const a = R.buildAlert(type, detail, extra);
+  const delivery = R.emitAlert(a, { logFile: PATHS.alerts, send: alertSender });
+  if (delivery) pendingAlerts.push(delivery);
+  return a;
+};
+const flushAlerts = async () => { if (pendingAlerts.length) await Promise.allSettled(pendingAlerts.splice(0)); };
+const exitAfterAlerts = async (code) => { await flushAlerts(); process.exit(code); };
 
 const TOK = (() => {
   let envText = null;
@@ -149,13 +161,13 @@ async function pushSlice(propertyId, rows) {
 }
 
 // ── #6 Dead-man's-switch check: alert (and exit non-zero) if no successful run recently ──
-function doHealthcheck() {
+async function doHealthcheck() {
   const last = R.readLastSuccess(PATHS.lastOk);
   const { stale, ageHours, lastSuccess } = R.isRunStale(last, { maxHours: 25 });
   if (stale) {
     alert('DEADMAN', `no successful pricing run in ${ageHours === Infinity ? 'EVER (no record)' : ageHours.toFixed(1) + 'h'} (>25h) — cron may be dead`, { lastSuccess });
     console.log(`DEAD-MAN: ⛔ STALE — last success ${lastSuccess || 'never'} (${ageHours === Infinity ? '∞' : ageHours.toFixed(1) + 'h'} ago)`);
-    process.exit(4);
+    return exitAfterAlerts(4);
   }
   console.log(`DEAD-MAN: ok — last success ${lastSuccess} (${ageHours.toFixed(1)}h ago, < 25h)`);
 }
@@ -190,13 +202,13 @@ async function doRollback(args) {
     if (!pr.ok) {
       console.log(`  ${u.label}: ✗ restore failed (${pr.dynamic ? '422 dynamic pricing' : pr.status}) — ABORTING`);
       alert('PUSH_ABORTED', `rollback restore failed for ${u.label} (${pr.status})`);
-      process.exit(3);
+      await exitAfterAlerts(3);
     }
     const v = await readBackVerify(u.propertyId, u.rows);
     if (!v.verified) {
       console.log(`  ${u.label}: pushed but READ-BACK MISMATCH (${(v.mismatches || [v.reason]).slice(0, 3).join('; ')}) — ABORTING`);
       alert('READBACK_MISMATCH', `rollback read-back mismatch for ${u.label}`, { mismatches: v.mismatches });
-      process.exit(3);
+      await exitAfterAlerts(3);
     }
     R.buildAuditEntries(u.label, u.rows.map(r => ({ ...r, event: 'ROLLBACK' })), { runId: RUN_ID, source: 'rollback' })
       .forEach(e => R.appendJsonl(PATHS.audit, e));
@@ -218,7 +230,7 @@ async function doRollback(args) {
     alert('CONFIG_INVALID', `${cfgCheck.errors.length} config error(s) — refusing to run`);
     console.error('⛔ CONFIG INVALID — refusing to run. Nothing fetched, nothing written:');
     cfgCheck.errors.forEach(e => console.error(`  ✗ ${e}`));
-    process.exit(2);
+    return exitAfterAlerts(2);
   }
 
   const today = etToday(); // America/New_York, not UTC — evening runs keep the right lead-time
@@ -321,6 +333,7 @@ async function doRollback(args) {
     console.log('\nDRY RUN — nothing written to Hospitable.');
     writeSummary(0);
     R.recordSuccess(PATHS.lastOk, { runId: RUN_ID, written: 0 });
+    await flushAlerts();
     return;
   }
 
@@ -330,7 +343,7 @@ async function doRollback(args) {
     console.log('\n⛔ PUSH HALTED by sanity check (signature of bad data). Nothing written.');
     console.log('   Re-run with --override-sanity to push anyway (only after you have verified the data).');
     writeSummary(0, ['sanity halt']);
-    process.exit(3);
+    return exitAfterAlerts(3);
   }
 
   // ---- #4 PREVENT: single-flight cron lock (overlapping runs must not push concurrently) ----
@@ -356,20 +369,20 @@ async function doRollback(args) {
         alert('MAPPING_DRIFT', `${label}: ${pf.error} — cannot verify, HALT`);
         console.log(`  ⛔ ${label}: ${pf.error} — cannot verify mapping, HALT (nothing written)`);
         writeSummary(0, ['preflight fetch failed']);
-        process.exit(5);
+        await exitAfterAlerts(5);
       }
       const vm = R.verifyPropertyMapping(label, u, pf.property);
       if (!vm.ok) {
         vm.reasons.forEach(rsn => alert('MAPPING_DRIFT', rsn));
         console.log(`  ⛔ ${vm.reasons.join('; ')} — HALT, nothing written`);
         writeSummary(0, ['mapping drift']);
-        process.exit(5);
+        await exitAfterAlerts(5);
       }
       if (R.detectDynamicPricingFromProperty(pf.property)) {
         alert('DYNAMIC_PRICING', `${label}: dynamic pricing enabled — two engines would fight`);
         console.log(`  ⛔ ${label}: dynamic pricing enabled — HALT, nothing written`);
         writeSummary(0, ['dynamic pricing on']);
-        process.exit(5);
+        await exitAfterAlerts(5);
       }
       console.log(`  ✓ ${label}: id + bedrooms match, dynamic pricing off`);
     }
@@ -393,7 +406,22 @@ async function doRollback(args) {
     for (let i = 0; i < rows.length && !aborted; i += sliceSize) {
       const slice = rows.slice(i, i + sliceSize);
       const span = `${slice[0].date}..${slice[slice.length - 1].date}`;
-      const pr = await pushSlice(propertyId, slice);
+
+      // #3 PRE-PUSH availability re-check: a night booked between the initial fetch and now must
+      // NOT be overwritten. Re-fetch this slice; drop any newly-booked night and alert.
+      let pushRows = slice;
+      const rc = await fetchCalendar(propertyId, slice[0].date, addDays(slice[slice.length - 1].date, 1));
+      if (isCalendarUsable(rc)) {
+        const nowBooked = slice.filter(r => isNightBooked(rc.map[r.date] && rc.map[r.date].raw));
+        if (nowBooked.length) {
+          alert('BOOKING_RACE', `${label}: ${nowBooked.length} night(s) booked since fetch — skipped (${nowBooked.map(r => r.date).slice(0, 3).join(', ')})`);
+          console.log(`  ${label} [${span}]: ⚠ ${nowBooked.length} night(s) booked since fetch — SKIPPING those, pushing the rest`);
+          pushRows = slice.filter(r => !isNightBooked(rc.map[r.date] && rc.map[r.date].raw));
+        }
+      }
+      if (!pushRows.length) { console.log(`  ${label} [${span}]: all nights newly booked — nothing to push`); continue; }
+
+      const pr = await pushSlice(propertyId, pushRows);
       if (!pr.ok) {
         const why = pr.dynamic ? '⛔ BLOCKED 422 (dynamic pricing) — nothing written' : `✗ ${pr.status} ${pr.detail}${pr.gaveUp && R.isTransientError(pr) ? ` (gave up after ${pr.attempts} attempts)` : ''}`;
         console.log(`  ${label} [${span}]: ${why} — ABORTING remaining batches`);
@@ -401,26 +429,27 @@ async function doRollback(args) {
         aborted = true; break;
       }
       if (args.batch) {
-        const v = await readBackVerify(propertyId, slice);
+        const v = await readBackVerify(propertyId, pushRows);
         if (!v.verified) {
           console.log(`  ${label} [${span}]: pushed but READ-BACK MISMATCH (${(v.mismatches || [v.reason]).slice(0, 2).join('; ')}) — ABORTING remaining batches`);
           alert('READBACK_MISMATCH', `${label} [${span}]`, { mismatches: v.mismatches });
           aborted = true; break;
         }
-        R.buildAuditEntries(label, slice, { runId: RUN_ID }).forEach(e => R.appendJsonl(PATHS.audit, e));
-        totalWritten += slice.length;
-        console.log(`  ${label} [${span}]: pushed + verified (${slice.length} nights)`);
+        R.buildAuditEntries(label, pushRows, { runId: RUN_ID }).forEach(e => R.appendJsonl(PATHS.audit, e));
+        totalWritten += pushRows.length;
+        console.log(`  ${label} [${span}]: pushed + verified (${pushRows.length} nights)`);
       } else {
-        R.buildAuditEntries(label, slice, { runId: RUN_ID }).forEach(e => R.appendJsonl(PATHS.audit, { ...e, verified: false }));
-        totalWritten += slice.length;
-        console.log(`  ${label}: PUSHED ${pr.status} (${slice.length} nights, UNVERIFIED — use --batch for read-back)`);
+        R.buildAuditEntries(label, pushRows, { runId: RUN_ID }).forEach(e => R.appendJsonl(PATHS.audit, { ...e, verified: false }));
+        totalWritten += pushRows.length;
+        console.log(`  ${label}: PUSHED ${pr.status} (${pushRows.length} nights, UNVERIFIED — use --batch for read-back)`);
       }
     }
   }
   console.log('\nNo half-state: a non-2xx response or a failed read-back writes/leaves nothing further and aborts remaining batches.');
   writeSummary(totalWritten);
   R.recordSuccess(PATHS.lastOk, { runId: RUN_ID, written: totalWritten });
+  await flushAlerts();
   } finally {
     if (lockHeld) R.releaseLock(PATHS.lock);
   }
-})().catch(e => { console.error('runner error:', e.message); process.exit(1); });
+})().catch(async (e) => { console.error('runner error:', e.message); alert('RUN_CRASHED', e.message); await flushAlerts(); process.exit(1); });

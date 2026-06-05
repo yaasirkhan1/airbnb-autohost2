@@ -47,11 +47,11 @@ ok('Dragon Con 2BR glide 695→386', () => {
   assert.strictEqual(at('21-I', '2026-09-04', 0).price, 386);
 });
 
-// ── Bridge Regional 23-N: 179 → 125, on a Bridge-only night (Sep 1–2) ──
-ok('Bridge Regional 1BR glide 179→125 on Sep 1 (Bridge-only)', () => {
-  assert.ok(/bridge/i.test(at('23-N', '2026-09-01', 30).event));
-  assert.strictEqual(at('23-N', '2026-09-01', 30).price, 179);
-  assert.strictEqual(at('23-N', '2026-09-01', 0).price, 125);
+// ── Bridge Regional is now Tier 1 (142→117), ease 7, on a Bridge-only night (Sep 1–2) ──
+ok('Bridge Regional 1BR Tier-1 glide 142→117 on Sep 1 (Bridge-only)', () => {
+  assert.ok(/bridge/i.test(at('23-N', '2026-09-01', 7).event));
+  assert.strictEqual(at('23-N', '2026-09-01', 7).price, 142);
+  assert.strictEqual(at('23-N', '2026-09-01', 0).price, 117);
 });
 
 // ── Overlap Sep 3–7: Dragon Con (higher) wins over Bridge at every lead ──
@@ -67,7 +67,7 @@ ok('Dragon Con + Bridge overlap (Sep 3–7): higher price (Dragon Con) wins', ()
 ok('NYE 1BR glide 157→132 with min 4→3 relax', () => {
   assert.strictEqual(at('23-N', '2026-12-31', 40).price, 157);
   assert.strictEqual(at('23-N', '2026-12-31', 40).minStay, 4); // far → high
-  assert.strictEqual(at('23-N', '2026-12-31', 29).minStay, 3); // inside ease → low
+  assert.strictEqual(at('23-N', '2026-12-31', 6).minStay, 3);  // inside ease (7) → low
   assert.strictEqual(at('23-N', '2026-12-31', 0).price, 132);
 });
 
@@ -75,7 +75,7 @@ ok('NYE 1BR glide 157→132 with min 4→3 relax', () => {
 ok('AmericasMart 1BR glide 199→145 with min 8→5 relax', () => {
   assert.strictEqual(at('23-N', '2027-01-14', 40).price, 199);
   assert.strictEqual(at('23-N', '2027-01-14', 40).minStay, 8);
-  assert.strictEqual(at('23-N', '2027-01-14', 29).minStay, 5);
+  assert.strictEqual(at('23-N', '2027-01-14', 6).minStay, 5); // inside ease (7) → low
   assert.strictEqual(at('23-N', '2027-01-14', 0).price, 145);
 });
 
@@ -96,22 +96,26 @@ ok('weekend HARD floor $99 still intact on a NON-event weekend', () => {
   // 2026-08-22 Sat, no event, last-minute vacant → $99 (regression)
   assert.strictEqual(computeNight(cfg, '23-N', '2026-08-22', { todayYmd: '2026-08-22', isBooked: false }).price, 99);
 });
-ok('World Cup SKIP still intact (engine writes nothing)', () => {
+ok('World Cup is now MANAGED as glide (skip removed) — window nights price, no skip', () => {
   const r = computeNight(cfg, '23-N', '2026-06-20', { todayYmd: '2026-06-01', isBooked: false });
-  assert.strictEqual(r.skip, true);
-  assert.strictEqual(r.price, null);
+  assert.strictEqual(r.skip, undefined, 'WC no longer hard-skips');
+  assert.ok(r.price >= 99, 'WC night now prices at/above the floor');
+  // (detailed WC tier behavior is covered by scripts/test-wc-glide.js)
 });
 
-// ── BUGFIX: weekend hard floor must hold on EVENT nights too (weak mult can't drag below $99) ──
-ok('weak-multiplier-event Friday on cheapest unit (23-N) never drops below $99', () => {
-  // 2026-08-07 Fri is inside "August Apparel+Formal" (mult 1.25) — it computed $82 before the fix.
-  const r = computeNight(cfg, '23-N', '2026-08-07', { todayYmd: '2026-06-05', isBooked: false });
-  assert.ok(r.event && /apparel/i.test(r.event), 'is a multiplier-event night');
-  assert.strictEqual(r.price, 99, `weekend floor must hold (got $${r.price})`);
-  assert.ok(r.clamped && r.clamped.bound === 'floor' && r.clamped.onEvent === true, 'clamp-up is recorded (loud)');
-  // and the same scan-flagged nights:
-  assert.ok(computeNight(cfg, '23-N', '2026-09-26', { todayYmd: '2026-06-05', isBooked: false }).price >= 99, 'Sep 26 (Collect-A-Con Sat) >= 99');
-  assert.ok(computeNight(cfg, '23-N', '2026-10-09', { todayYmd: '2026-06-05', isBooked: false }).price >= 99, 'Oct 9 (October Apparel Fri) >= 99');
+// ── Weekend hard floor holds on EVENT nights too (now all event floors are >= $99/$127, but
+//    a Tier-3 event easing to its $99 floor on a weekend must still never dip below $99) ──
+ok('event-night weekend never drops below $99 (Tier-3 eases to exactly the $99 floor)', () => {
+  // Falcons vs Bears (Tier 3, 1BR floor $99) on a near date → eases to $99, never below.
+  for (const lead of [7, 3, 1, 0]) {
+    const r = at('23-N', '2026-10-18', lead);
+    assert.ok(r.price >= 99, `Tier-3 event night >= 99 (lead ${lead} → $${r.price})`);
+  }
+  // every glide event floor sits at/above the weekend hard floor (config-level invariant)
+  for (const e of cfg.events.filter(e => e.priceMode === 'glide')) {
+    assert.ok(e.floor1BR >= 99, `${e.name}: floor1BR ${e.floor1BR} >= 99`);
+    assert.ok(e.floor2BR == null || e.floor2BR >= 127, `${e.name}: floor2BR ${e.floor2BR} >= 127`);
+  }
 });
 ok('the fix does NOT lower events already above the floor (Dragon Con Sat stays $500)', () => {
   // Sep 5 2026 is a Saturday inside Dragon Con; far out → startPrice

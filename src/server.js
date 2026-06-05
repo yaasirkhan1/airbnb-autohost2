@@ -5,7 +5,7 @@ const fs           = require('fs');
 const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
 const cron         = require('node-cron');
-const { runPricing23N, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ } = require('./pricing-cron');
+const { runPricing23N, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingHealthcheck, PRICING_HEALTHCHECK_SCHEDULE } = require('./pricing-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { savePending, loadPending, partitionPending } = require('./pending-store');
@@ -2765,6 +2765,9 @@ app.listen(PORT, () => {
   } else {
     cron.schedule(PRICING_CRON_SCHEDULE, () => runPricing23N(), { timezone: PRICING_CRON_TZ });
     console.log('[pricing] Cron scheduled — 9:00 AM Eastern daily (23-N only)');
+    // Dead-man's switch: 30 min after the run, verify a healthy run is on record (alerts via SMS if not)
+    cron.schedule(PRICING_HEALTHCHECK_SCHEDULE, () => runPricingHealthcheck(), { timezone: PRICING_CRON_TZ });
+    console.log('[pricing] Dead-man healthcheck scheduled — 9:30 AM Eastern daily');
   }
 });
 }

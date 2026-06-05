@@ -293,10 +293,13 @@ function buildAlert(type, detail, extra = {}) {
 }
 // Stub: prints a single grep-able ALERT line and (optionally) appends to a log. Swap the
 // body for OpenPhone SMS / Resend email later — the call sites already pass structured data.
-function emitAlert(alert, { logFile, log = console.error } = {}) {
+// Emits an alert: logs it, appends to the alert log, AND (if a `send` notifier is wired)
+// delivers a real notification (SMS/email). Returns the delivery promise (or null) so the
+// caller can flush all sends before the process exits. NEVER throws.
+function emitAlert(alert, { logFile, log = console.error, send } = {}) {
   log(`[ALERT] ${alert.type}: ${alert.detail}`);
   if (logFile) { try { appendJsonl(logFile, alert); } catch {} }
-  return alert;
+  return send ? Promise.resolve().then(() => send(alert)).catch((e) => ({ sent: false, error: e && e.message })) : null;
 }
 
 // ── #6 Dead-man's-switch ─────────────────────────────────────────────────────────────
