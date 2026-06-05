@@ -20,6 +20,26 @@ function readJson(file, fallback = null) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
 }
 
+// ── Environment resolution (works both locally and on Railway) ───────────────────────
+// Hospitable token: prefer a local .env HOSPITABLE_TOKEN (dev laptop), else fall back to the
+// process env (Railway injects HOSPITABLE_API_KEY — there is NO .env file there). Pure: the
+// caller passes the .env file TEXT (or null if the file is absent/unreadable) + the env object.
+function resolveHospitableToken(envText, env = process.env) {
+  let fromFile = '';
+  if (typeof envText === 'string') {
+    const line = envText.split('\n').find(l => l.startsWith('HOSPITABLE_TOKEN='));
+    if (line) fromFile = line.slice('HOSPITABLE_TOKEN='.length).trim();
+  }
+  return fromFile || env.HOSPITABLE_API_KEY || env.HOSPITABLE_TOKEN || '';
+}
+
+// Data dir for resilience artifacts (snapshots/audit/dead-man/lock). PRICING_DATA_DIR (e.g. a
+// mounted Railway volume at /app/data) overrides the repo-relative default so artifacts persist
+// across deploys. Pure.
+function resolveDataDir(env, fallbackDir) {
+  return (env && env.PRICING_DATA_DIR) || fallbackDir;
+}
+
 // ════════════════════════════════ PREVENTION ════════════════════════════════════════
 
 // ── #3 Config integrity check ──────────────────────────────────────────────────────
@@ -285,6 +305,8 @@ function isRunStale(lastRec, { now = Date.now(), maxHours = 25 } = {}) {
 module.exports = {
   // io helpers
   appendJsonl, readJson,
+  // environment
+  resolveHospitableToken, resolveDataDir,
   // prevention
   validateConfig, isRealYmd,
   expectedBedrooms, verifyPropertyMapping,

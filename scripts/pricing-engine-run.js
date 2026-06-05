@@ -13,7 +13,7 @@
 //   - Run sanity check: if >X% of nights change or any move >Y%, HALT (needs --override-sanity).
 //   - Overlap: skip wins, else higher-priced event wins; 2+ overlaps flagged in preview.
 //   - --batch N: push in N-day slices, read-back-verify each, abort remaining on mismatch.
-// Hospitable auth: HOSPITABLE_TOKEN from .env.
+// Hospitable auth: .env HOSPITABLE_TOKEN locally, else process.env.HOSPITABLE_API_KEY (Railway).
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -22,8 +22,9 @@ const { isCalendarUsable, isNightBooked, isPushable, etToday, runSanityCheck } =
 const R = require('../src/pricing-resilience');
 const config = require('../src/pricing-config.json');
 
-// Resilience artifact paths (data/ — gitignored runtime state).
-const DATA = path.join(__dirname, '..', 'data');
+// Resilience artifact paths. Defaults to repo-relative data/; PRICING_DATA_DIR (a mounted
+// Railway volume, e.g. /app/data) overrides it so snapshots/audit/dead-man survive redeploys.
+const DATA = R.resolveDataDir(process.env, path.join(__dirname, '..', 'data'));
 const PATHS = {
   lock:      path.join(DATA, 'pricing-engine.lock'),
   audit:     path.join(DATA, 'pricing-audit.log'),
@@ -36,9 +37,10 @@ const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 const alert = (type, detail, extra) => R.emitAlert(R.buildAlert(type, detail, extra), { logFile: PATHS.alerts });
 
 const TOK = (() => {
-  const line = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf8').split('\n').find(l => l.startsWith('HOSPITABLE_TOKEN='));
-  const t = line ? line.slice('HOSPITABLE_TOKEN='.length).trim() : (process.env.HOSPITABLE_API_KEY || '');
-  if (!t) { console.error('No HOSPITABLE_TOKEN in .env'); process.exit(1); }
+  let envText = null;
+  try { envText = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf8'); } catch { /* no .env (Railway) — use process env */ }
+  const t = R.resolveHospitableToken(envText, process.env);
+  if (!t) { console.error('No Hospitable token (.env HOSPITABLE_TOKEN or env HOSPITABLE_API_KEY/HOSPITABLE_TOKEN)'); process.exit(1); }
   return t;
 })();
 const hos = async (method, p, body) => {

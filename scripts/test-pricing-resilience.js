@@ -191,6 +191,27 @@ ok('snapshotToRollbackRows restores prior values, skips unknown-prior nights (fa
   assert.deepStrictEqual(rows[0].skipped, ['2026-09-05']);
 });
 
+// ════════════════════════ environment resolution (local + Railway) ═══════════════════════
+ok('resolveHospitableToken: .env HOSPITABLE_TOKEN wins; else falls back to process env', () => {
+  // local: .env present
+  assert.strictEqual(R.resolveHospitableToken('FOO=1\nHOSPITABLE_TOKEN=abc\nBAR=2', {}), 'abc');
+  // .env precedence over env var
+  assert.strictEqual(R.resolveHospitableToken('HOSPITABLE_TOKEN=abc', { HOSPITABLE_API_KEY: 'k' }), 'abc');
+  // Railway: no .env file (null) → HOSPITABLE_API_KEY
+  assert.strictEqual(R.resolveHospitableToken(null, { HOSPITABLE_API_KEY: 'k' }), 'k');
+  // .env present but no token line → fall back
+  assert.strictEqual(R.resolveHospitableToken('OTHER=1', { HOSPITABLE_API_KEY: 'k' }), 'k');
+  // last-resort HOSPITABLE_TOKEN env var
+  assert.strictEqual(R.resolveHospitableToken(null, { HOSPITABLE_TOKEN: 't' }), 't');
+  // nothing anywhere → '' (runner then exits 1)
+  assert.strictEqual(R.resolveHospitableToken(null, {}), '');
+});
+ok('resolveDataDir: PRICING_DATA_DIR (mounted volume) overrides the default', () => {
+  assert.strictEqual(R.resolveDataDir({ PRICING_DATA_DIR: '/app/data' }, '/repo/data'), '/app/data');
+  assert.strictEqual(R.resolveDataDir({}, '/repo/data'), '/repo/data');
+  assert.strictEqual(R.resolveDataDir(undefined, '/repo/data'), '/repo/data');
+});
+
 // ════════════════════════ #11 idempotency (re-run is a no-op) ═════════════════════════════
 ok('computing the same night twice yields identical price + min-stay (deterministic)', () => {
   const a = computeNight(realConfig, '4-L', '2026-09-04', { todayYmd: '2026-06-05', isBooked: false });

@@ -5,6 +5,7 @@ const fs           = require('fs');
 const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
 const cron         = require('node-cron');
+const { runPricing23N, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ } = require('./pricing-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { savePending, loadPending, partitionPending } = require('./pending-store');
@@ -2764,6 +2765,16 @@ app.listen(PORT, () => {
     sendCleaningSchedule().catch(e => console.error('[cleaning] Cron error:', e.message));
   }, { timezone: 'America/New_York' });
   console.log('[cleaning] Cron scheduled — 9:00 PM Eastern daily');
+
+  // Daily pricing run — 9:00 AM Eastern, 23-N ONLY (--confirm --batch 30, no override-sanity).
+  // Spawns the engine as a child process so its exit can't take the server down. Set
+  // PRICING_CRON=off (Railway env) to disable without a redeploy.
+  if (process.env.PRICING_CRON === 'off') {
+    console.log('[pricing] Cron DISABLED via PRICING_CRON=off');
+  } else {
+    cron.schedule(PRICING_CRON_SCHEDULE, () => runPricing23N(), { timezone: PRICING_CRON_TZ });
+    console.log('[pricing] Cron scheduled — 9:00 AM Eastern daily (23-N only)');
+  }
 });
 }
 
