@@ -6,9 +6,11 @@
 //
 // Layer order: base -> seasonal -> day-of-week -> event override -> decay -> clamp(floor,ceiling)
 //
-// SAFETY: never returns a price below the applicable floor. Soft weekend floor
-// ($99) holds Fri/Sat until within softFloorReleaseDaysOut of the date if still
-// vacant, then releases toward hard floor. Hard floor is always the final stop.
+// SAFETY: never returns a price below the applicable floor. The weekend floor
+// ($99 1BR / $127 2BR) is a HARD floor on Fri/Sat — the engine never computes or
+// pushes a weekend night below it, regardless of lead time or vacancy (no soft
+// release). Only a manual change can take a weekend below its floor. The per-unit
+// hard floor is the final stop for non-weekend nights.
 
 'use strict';
 
@@ -181,12 +183,11 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
   const hardFloor = unit.floor;
   let floorUsed = hardFloor;
   if (isWeekend && !ev) {
-    // soft weekend floor applies on normal weekends; releases near the date if vacant.
-    // softWeekendFloor may be a single number (legacy) or a per-type map { "1BR": .., "2BR": .. }.
-    const released = (!isBooked) && (leadDays <= (config.softFloorReleaseDaysOut || 2));
-    const swf = config.softWeekendFloor;
-    const swfVal = (swf && typeof swf === 'object') ? swf[unit.type] : swf;
-    if (!released) floorUsed = Math.max(hardFloor, swfVal || hardFloor);
+    // HARD weekend floor: Fri/Sat never go below it, regardless of lead time or vacancy
+    // (no soft-release). weekendFloor may be a single number (legacy) or a per-type map.
+    const wf = config.weekendFloor;
+    const wfVal = (wf && typeof wf === 'object') ? wf[unit.type] : wf;
+    floorUsed = Math.max(hardFloor, wfVal || hardFloor);
   }
   // Record clamps so they're never silent. onEvent=true means an EVENT-driven price
   // landed outside [floor, ceiling] — the signature of a misconfigured event price the

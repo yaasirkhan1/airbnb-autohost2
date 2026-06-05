@@ -11,7 +11,7 @@ let pass = 0; const ok = (n, f) => { f(); console.log('✓', n); pass++; };
 const cfg = (events) => ({
   units: { 'X': { type: '1BR', quality: 'ok', base: 100, floor: 60, ceiling: 300 } },
   seasonal: {}, dayOfWeek: {}, perUnitAdj: { ok: 0 },
-  softWeekendFloor: { '1BR': 99, '2BR': 127 }, softFloorReleaseDaysOut: 2,
+  weekendFloor: { '1BR': 99, '2BR': 127 },
   decay: [{ daysOut: 30, mult: 1.0 }, { daysOut: 3, mult: 0.5 }], events,
 });
 const FAR = { todayYmd: '2026-01-01', isBooked: false };
@@ -136,6 +136,25 @@ ok('(#1) routine decay-to-floor on a NON-event night is not flagged as an event 
   // deep decay below floor on a normal weekday → clamps to floor but onEvent=false
   const r = computeNight(cfg([]), 'X', '2026-10-19', { todayYmd: '2026-10-18', isBooked: false }); // 1 day out, mult well below
   if (r.clamped) assert.strictEqual(r.clamped.onEvent, false);
+});
+
+// ── Weekend floor is a HARD floor: a vacant last-minute Fri/Sat never decays below it ──
+ok('weekend HARD floor: empty Fri/Sat hold $99 (1BR) / $127 (2BR) at ANY lead time (no release)', () => {
+  // 2026-06-05 is Fri, 06-06 Sat, no event; decayed base is far below the weekend floor.
+  for (const today of ['2026-06-05', '2026-06-04', '2026-05-07']) { // leadDays 0, 1, 29 — all must hold
+    const fri = computeNight(realConfig, '23-N', '2026-06-05', { todayYmd: today, isBooked: false });
+    const sat = computeNight(realConfig, '23-N', '2026-06-06', { todayYmd: today, isBooked: false });
+    assert.strictEqual(fri.price, 99, `23-N Fri @${today} must hold weekend floor 99, got ${fri.price}`);
+    assert.strictEqual(sat.price, 99, `23-N Sat @${today} must hold weekend floor 99, got ${sat.price}`);
+    assert.strictEqual(fri.floorUsed, 99, `23-N Fri @${today} floorUsed must be the weekend floor`);
+  }
+  // 2BR weekend floor $127, last-minute (leadDays 0) vacant Saturday
+  const sat2 = computeNight(realConfig, '21-I', '2026-06-06', { todayYmd: '2026-06-06', isBooked: false });
+  assert.strictEqual(sat2.price, 127, `21-I 2BR last-minute Sat must hold weekend floor 127, got ${sat2.price}`);
+  assert.strictEqual(sat2.floorUsed, 127);
+  // weekday is unaffected — a vacant Monday may still decay below the weekend floor to its hard floor
+  const mon = computeNight(realConfig, '23-N', '2026-06-08', { todayYmd: '2026-06-08', isBooked: false });
+  assert.ok(mon.price < 99, `Mon should be allowed below 99 (weekend rule is weekend-only), got ${mon.price}`);
 });
 
 console.log(`\n${pass} passed`);

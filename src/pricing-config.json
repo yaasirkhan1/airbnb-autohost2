@@ -30,9 +30,8 @@
     "5":  0.10, "6":  0.10
   },
 
-  "_floorComment": "Soft weekend floor holds Fri/Sat (1BR $99 / 2BR $127) until final 1-2 days if vacant, then releases toward hard floor. Hard floor per-unit is the absolute stop.",
-  "softWeekendFloor": { "1BR": 99, "2BR": 127 },
-  "softFloorReleaseDaysOut": 2,
+  "_floorComment": "HARD weekend floor: Fri/Sat never go below 1BR $99 / 2BR $127, regardless of lead time or vacancy (no soft-release). Only a manual edit can take a weekend below its floor. Per-unit hard floor is the absolute stop for non-weekend nights.",
+  "weekendFloor": { "1BR": 99, "2BR": 127 },
 
   "_decayComment": "Unbooked nights step DOWN toward floor as date nears. Gentle early, steep late. Multiplier applied to the computed price. Booked nights untouched. Never below applicable floor.",
   "decay": [
