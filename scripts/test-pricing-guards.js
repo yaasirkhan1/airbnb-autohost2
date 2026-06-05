@@ -153,7 +153,8 @@ ok('weekend HARD floor: empty Fri/Sat hold $99 (1BR) / $127 (2BR) at ANY lead ti
   assert.strictEqual(sat2.price, 127, `21-I 2BR last-minute Sat must hold weekend floor 127, got ${sat2.price}`);
   assert.strictEqual(sat2.floorUsed, 127);
   // weekday is unaffected — a vacant Monday may still decay below the weekend floor to its hard floor
-  const mon = computeNight(realConfig, '23-N', '2026-06-08', { todayYmd: '2026-06-08', isBooked: false });
+  // (use Aug 10 — a clean no-event Monday; Jun 8 is now inside the Jun 7-13 fixed-hold block)
+  const mon = computeNight(realConfig, '23-N', '2026-08-10', { todayYmd: '2026-08-10', isBooked: false });
   assert.ok(mon.price < 99, `Mon should be allowed below 99 (weekend rule is weekend-only), got ${mon.price}`);
 });
 
