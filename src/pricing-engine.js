@@ -35,6 +35,48 @@ function eventFor(config, dateYmd) {
   return skipHit || hit;
 }
 
+// All events whose window covers the date.
+function eventsCovering(config, dateYmd) {
+  return (config.events || []).filter(ev => dateYmd >= ev.start && dateYmd <= ev.end);
+}
+
+// Event-driven price for one unit under one event (pre-decay / pre-clamp). Used to pick
+// the winner among overlapping priced events.
+function eventCandidatePrice(config, unit, ev, month, dow) {
+  if (ev.priceMode === 'set') {
+    return unit.type === '2BR' ? (ev.price2BR != null ? ev.price2BR : ev.price1BR) : ev.price1BR;
+  }
+  if (ev.priceMode === 'mult') {
+    const base = unit.base;
+    const seas = (config.seasonal && config.seasonal[String(month)]) || 0;
+    const dowAdj = (config.dayOfWeek && config.dayOfWeek[String(dow)]) || 0;
+    const adj = (config.perUnitAdj && config.perUnitAdj[unit.quality]) || 0;
+    return base * (1 + seas) * (1 + dowAdj) * ev.mult * (1 + adj);
+  }
+  return -Infinity; // non-priced mode (e.g. unknown) never wins an overlap
+}
+
+// Overlap resolution (explicit, replaces last-in-config-wins):
+//   1. a priceMode:"skip" event ALWAYS wins (hard hands-off, e.g. World Cup).
+//   2. otherwise, among priced (set/mult) events, the one yielding the HIGHER price for
+//      THIS unit wins. Ties keep the first encountered.
+// Returns { skip, event, alternatives } — alternatives lists every priced candidate so the
+// runner can show which won and what the loser(s) would have been.
+function resolveEvent(config, unit, dateYmd, month, dow) {
+  const covering = eventsCovering(config, dateYmd);
+  const skipEv = covering.find(e => e.priceMode === 'skip');
+  if (skipEv) return { skip: skipEv, event: null, alternatives: [] };
+  const priced = covering.filter(e => e.priceMode === 'set' || e.priceMode === 'mult');
+  let event = null, best = -Infinity;
+  const alternatives = [];
+  for (const e of priced) {
+    const p = eventCandidatePrice(config, unit, e, month, dow);
+    alternatives.push({ name: e.name, price: Math.round(p), priceMode: e.priceMode });
+    if (p > best) { best = p; event = e; }
+  }
+  return { skip: null, event, alternatives };
+}
+
 // Resolve a min-stay spec: number, or [farOut, near] decaying by lead time.
 function resolveMinStay(spec, leadDays) {
   if (spec == null) return null;
@@ -78,20 +120,21 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
   const isWeekend = (dow === 5 || dow === 6);
 
   const layers = {};
-  const ev = eventFor(config, dateYmd);
+  // Overlap-safe resolution: skip wins; else higher-priced event wins (not last-in-config).
+  const { skip, event: ev, alternatives } = resolveEvent(config, unit, dateYmd, month, dow);
 
   // ---- SKIP zone: engine must not touch these dates (e.g. World Cup, handled separately) ----
-  if (ev && ev.priceMode === 'skip') {
+  if (skip) {
     return {
       unit: unitLabel,
       date: dateYmd,
       skip: true,
       price: null,
       minStay: null,
-      event: ev.name,
+      event: skip.name,
       booked: isBooked,
       leadDays: daysBetween(todayYmd, dateYmd),
-      layers: { skip: ev.name }
+      layers: { skip: skip.name }
     };
   }
 
@@ -164,8 +207,10 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
     booked: isBooked,
     event: ev ? ev.name : null,
     leadDays,
-    layers
+    layers,
+    // Overlap transparency: present only when 2+ priced events covered this date.
+    overlaps: alternatives.length >= 2 ? alternatives : undefined
   };
 }
 
-module.exports = { computeNight, eventFor, resolveMinStay, decayMult, daysBetween };
+module.exports = { computeNight, eventFor, eventsCovering, resolveEvent, eventCandidatePrice, resolveMinStay, decayMult, daysBetween };
