@@ -93,6 +93,20 @@ function validateConfig(config) {
       if (ev.price2BR != null && (!num(ev.price2BR) || ev.price2BR <= 0)) errors.push(`${tag}: price2BR present but not > 0`);
     } else if (ev.priceMode === 'mult') {
       if (!num(ev.mult) || ev.mult <= 0) errors.push(`${tag}: mult-mode needs mult > 0`);
+    } else if (ev.priceMode === 'glide') {
+      if (!num(ev.startPrice1BR) || ev.startPrice1BR <= 0) errors.push(`${tag}: glide needs startPrice1BR > 0`);
+      if (!num(ev.floor1BR) || ev.floor1BR <= 0) errors.push(`${tag}: glide needs floor1BR > 0`);
+      if (num(ev.startPrice1BR) && num(ev.floor1BR) && ev.floor1BR > ev.startPrice1BR) errors.push(`${tag}: floor1BR ($${ev.floor1BR}) > startPrice1BR ($${ev.startPrice1BR})`);
+      if (ev.startPrice2BR != null || ev.floor2BR != null) {
+        if (!num(ev.startPrice2BR) || ev.startPrice2BR <= 0) errors.push(`${tag}: glide startPrice2BR present but not > 0`);
+        if (!num(ev.floor2BR) || ev.floor2BR <= 0) errors.push(`${tag}: glide floor2BR present but not > 0`);
+        if (num(ev.startPrice2BR) && num(ev.floor2BR) && ev.floor2BR > ev.startPrice2BR) errors.push(`${tag}: floor2BR ($${ev.floor2BR}) > startPrice2BR ($${ev.startPrice2BR})`);
+      }
+      for (const [k, ms] of [['minStayHigh', ev.minStayHigh], ['minStayLow', ev.minStayLow]]) {
+        if (ms != null && (!num(ms) || ms <= 0 || !Number.isInteger(ms))) errors.push(`${tag}: ${k} (${ms}) must be a positive integer`);
+      }
+      if (num(ev.minStayHigh) && num(ev.minStayLow) && ev.minStayLow > ev.minStayHigh) errors.push(`${tag}: minStayLow (${ev.minStayLow}) > minStayHigh (${ev.minStayHigh})`);
+      if (ev.easeStartDays != null && (!num(ev.easeStartDays) || ev.easeStartDays <= 0)) errors.push(`${tag}: easeStartDays must be > 0`);
     } else if (ev.priceMode !== 'skip') {
       errors.push(`${tag}: unknown priceMode ${JSON.stringify(ev.priceMode)}`);
     }

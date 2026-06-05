@@ -42,11 +42,36 @@ function eventsCovering(config, dateYmd) {
   return (config.events || []).filter(ev => dateYmd >= ev.start && dateYmd <= ev.end);
 }
 
-// Event-driven price for one unit under one event (pre-decay / pre-clamp). Used to pick
-// the winner among overlapping priced events.
-function eventCandidatePrice(config, unit, ev, month, dow) {
+// Per-event daily glide: price falls LINEARLY from startPrice (at >= easeStartDays out) down
+// to the event floor (at the night itself). Never below floor, never above startPrice.
+// leadDays = days until the night. This is the per-night, lead-time form of the decay.
+function glidePrice(startPrice, floor, easeStartDays, leadDays) {
+  const ease = easeStartDays > 0 ? easeStartDays : 30;
+  if (leadDays >= ease) return startPrice;
+  if (leadDays <= 0) return floor;
+  return floor + (startPrice - floor) * (leadDays / ease);
+}
+// Min-stay relaxes from high (far out, >= easeStartDays) to low (inside the ease window).
+function glideMinStay(high, low, easeStartDays, leadDays) {
+  const ease = easeStartDays > 0 ? easeStartDays : 30;
+  return leadDays >= ease ? high : low;
+}
+// Resolve a glide event's startPrice/floor for a unit type (2BR falls back to 1BR if absent).
+function glideParams(ev, unitType) {
+  const startPrice = unitType === '2BR' ? (ev.startPrice2BR != null ? ev.startPrice2BR : ev.startPrice1BR) : ev.startPrice1BR;
+  const floor = unitType === '2BR' ? (ev.floor2BR != null ? ev.floor2BR : ev.floor1BR) : ev.floor1BR;
+  return { startPrice, floor, ease: ev.easeStartDays != null ? ev.easeStartDays : 30 };
+}
+
+// Event-driven price for one unit under one event (pre-clamp). Used to pick the winner among
+// overlapping priced events. Needs leadDays so glide events compare at the correct point.
+function eventCandidatePrice(config, unit, ev, month, dow, leadDays) {
   if (ev.priceMode === 'set') {
     return unit.type === '2BR' ? (ev.price2BR != null ? ev.price2BR : ev.price1BR) : ev.price1BR;
+  }
+  if (ev.priceMode === 'glide') {
+    const g = glideParams(ev, unit.type);
+    return glidePrice(g.startPrice, g.floor, g.ease, leadDays);
   }
   if (ev.priceMode === 'mult') {
     const base = unit.base;
@@ -60,19 +85,19 @@ function eventCandidatePrice(config, unit, ev, month, dow) {
 
 // Overlap resolution (explicit, replaces last-in-config-wins):
 //   1. a priceMode:"skip" event ALWAYS wins (hard hands-off, e.g. World Cup).
-//   2. otherwise, among priced (set/mult) events, the one yielding the HIGHER price for
-//      THIS unit wins. Ties keep the first encountered.
+//   2. otherwise, among priced (set/mult/glide) events, the one yielding the HIGHER price for
+//      THIS unit at THIS lead time wins. Ties keep the first encountered.
 // Returns { skip, event, alternatives } — alternatives lists every priced candidate so the
 // runner can show which won and what the loser(s) would have been.
-function resolveEvent(config, unit, dateYmd, month, dow) {
+function resolveEvent(config, unit, dateYmd, month, dow, leadDays) {
   const covering = eventsCovering(config, dateYmd);
   const skipEv = covering.find(e => e.priceMode === 'skip');
   if (skipEv) return { skip: skipEv, event: null, alternatives: [] };
-  const priced = covering.filter(e => e.priceMode === 'set' || e.priceMode === 'mult');
+  const priced = covering.filter(e => e.priceMode === 'set' || e.priceMode === 'mult' || e.priceMode === 'glide');
   let event = null, best = -Infinity;
   const alternatives = [];
   for (const e of priced) {
-    const p = eventCandidatePrice(config, unit, e, month, dow);
+    const p = eventCandidatePrice(config, unit, e, month, dow, leadDays);
     alternatives.push({ name: e.name, price: Math.round(p), priceMode: e.priceMode });
     if (p > best) { best = p; event = e; }
   }
@@ -123,7 +148,7 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
 
   const layers = {};
   // Overlap-safe resolution: skip wins; else higher-priced event wins (not last-in-config).
-  const { skip, event: ev, alternatives } = resolveEvent(config, unit, dateYmd, month, dow);
+  const { skip, event: ev, alternatives } = resolveEvent(config, unit, dateYmd, month, dow, leadDays);
 
   // ---- SKIP zone: engine must not touch these dates (e.g. World Cup, handled separately) ----
   if (skip) {
@@ -142,12 +167,19 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
 
   // ---- Price ----
   let price;
+  let eventFloorUnit = null; // event-specific floor (glide events) — enforced in the floor step
   if (ev && ev.priceMode === 'set') {
     // fixed price by unit type
     price = unit.type === '2BR'
       ? (ev.price2BR != null ? ev.price2BR : ev.price1BR)  // fall back if 2BR not given
       : ev.price1BR;
     layers.eventSet = price;
+  } else if (ev && ev.priceMode === 'glide') {
+    // per-event daily glide from startPrice (>= ease days out) down to the event floor
+    const g = glideParams(ev, unit.type);
+    price = glidePrice(g.startPrice, g.floor, g.ease, leadDays);
+    eventFloorUnit = g.floor;
+    layers.eventGlide = { startPrice: g.startPrice, floor: g.floor, easeStartDays: g.ease, leadDays, raw: Math.round(price) };
   } else {
     // base -> seasonal -> day-of-week
     const base = unit.base;
@@ -167,27 +199,31 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
     }
   }
 
-  // ---- Decay (only unbooked nights; NOT on fixed set-price events) ----
-  const isSetPriceEvent = ev && ev.priceMode === 'set';
-  if (!isBooked && !isSetPriceEvent) {
+  // ---- Decay (only unbooked nights; NOT on fixed-price events: set OR glide) ----
+  // A glide event already encodes its own lead-time descent, so the generic decay is skipped.
+  const isFixedEvent = ev && (ev.priceMode === 'set' || ev.priceMode === 'glide');
+  if (!isBooked && !isFixedEvent) {
     const dm = decayMult(config, leadDays);
     price = price * dm;
     layers.decay = dm;
-  } else if (isSetPriceEvent) {
-    layers.decay = 'skipped(set-price event)';
+  } else if (isFixedEvent) {
+    layers.decay = `skipped(${ev.priceMode}-event)`;
   } else {
     layers.decay = 'skipped(booked)';
   }
 
   // ---- Floors ----
+  // floorUsed = max(per-unit hard floor, glide-event floor if any, weekend hard floor on Fri/Sat).
+  // The weekend hard floor ALWAYS holds on Fri/Sat — even on event nights. An event may push a
+  // weekend UP (Dragon Con $500 stays $500), but a weak multiplier can never drag it below the
+  // $99/$127 weekend floor. No soft-release.
   const hardFloor = unit.floor;
   let floorUsed = hardFloor;
-  if (isWeekend && !ev) {
-    // HARD weekend floor: Fri/Sat never go below it, regardless of lead time or vacancy
-    // (no soft-release). weekendFloor may be a single number (legacy) or a per-type map.
+  if (eventFloorUnit != null) floorUsed = Math.max(floorUsed, eventFloorUnit); // glide event's own floor
+  if (isWeekend) {
     const wf = config.weekendFloor;
     const wfVal = (wf && typeof wf === 'object') ? wf[unit.type] : wf;
-    floorUsed = Math.max(hardFloor, wfVal || hardFloor);
+    floorUsed = Math.max(floorUsed, wfVal || 0);
   }
   // Record clamps so they're never silent. onEvent=true means an EVENT-driven price
   // landed outside [floor, ceiling] — the signature of a misconfigured event price the
@@ -202,7 +238,11 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
   price = Math.round(price);
 
   // ---- Min-stay ----
-  const minStay = ev ? resolveMinStay(ev.minStay, leadDays) : null;
+  const minStay = ev
+    ? (ev.priceMode === 'glide'
+        ? glideMinStay(ev.minStayHigh, ev.minStayLow, ev.easeStartDays != null ? ev.easeStartDays : 30, leadDays)
+        : resolveMinStay(ev.minStay, leadDays))
+    : null;
 
   return {
     unit: unitLabel,
@@ -220,4 +260,4 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
   };
 }
 
-module.exports = { computeNight, eventFor, eventsCovering, resolveEvent, eventCandidatePrice, resolveMinStay, decayMult, daysBetween };
+module.exports = { computeNight, eventFor, eventsCovering, resolveEvent, eventCandidatePrice, resolveMinStay, decayMult, daysBetween, glidePrice, glideMinStay, glideParams };
