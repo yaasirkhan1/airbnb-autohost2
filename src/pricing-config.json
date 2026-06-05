@@ -9,7 +9,7 @@
     "21-D": { "propertyId": "80c21aac-00eb-49af-9094-6792839ff5a4", "type": "1BR", "quality": "ok",          "base": 83,  "floor": 58, "ceiling": 600 },
     "7-B":  { "propertyId": "1af8fdde-58ee-426e-8374-6530397347e8", "type": "1BR", "quality": "older",       "base": 81,  "floor": 62, "ceiling": 600 },
     "23-N": { "propertyId": "283977a3-3af3-4d90-8d95-b418a3014d90", "type": "1BR", "quality": "not_updated", "base": 74,  "floor": 55, "ceiling": 600 },
-    "21-I": { "propertyId": "7b7fda8b-e1d8-460f-8143-59a1a2b4d81c", "type": "2BR", "quality": "ok",          "base": 105, "floor": 87, "ceiling": 800 }
+    "21-I": { "propertyId": "7b7fda8b-e1d8-460f-8143-59a1a2b4d81c", "type": "2BR", "quality": "ok",          "base": 115, "floor": 87, "ceiling": 800 }
   },
 
   "_seasonalComment": "Multiplier on base by month. MODEST — normal market is $55-80/nt, so normal days stay near base. Events do the heavy lifting, not seasonality.",
