@@ -133,6 +133,20 @@ function getPriceRules(id) {
   return id === ATLANTA_2BR_ID ? PRICE_RULES['2br'] : PRICE_RULES['1br'];
 }
 
+// ── Kill-switches for the legacy hourly demand engine (default = ON, current behavior) ──
+// Both read process.env at runtime so a Railway variable change takes effect on the next
+// cycle (and reversibly: unset → legacy engine resumes).
+//   PRICING_LEGACY_ENGINE=off     → don't schedule the legacy engine at all.
+//   PRICING_LEGACY_EXCLUDE=id,id  → legacy engine skips these property IDs (the new engine
+//                                   owns them) so the two engines never fight over a calendar.
+function legacyEngineEnabled(env = process.env) {
+  return env.PRICING_LEGACY_ENGINE !== 'off';
+}
+function legacyEngineExcluded(propId, env = process.env) {
+  const set = new Set(String(env.PRICING_LEGACY_EXCLUDE || '').split(',').map(s => s.trim()).filter(Boolean));
+  return set.has(propId);
+}
+
 // Persisted per-property price state: { price, lastInquiryAt, lastChangedAt, pendingPush, log[] }
 const pricingState   = new Map();
 const pricingChanges = []; // global chronological log, capped at 200
@@ -345,16 +359,21 @@ async function initAllPropertyProfiles() {
   setInterval(pollForNewMessages, 60 * 1000);
   console.log(`[poll] Polling started — checking every 60s (since ${pollingSince})`);
 
-  // Start hourly demand-based pricing engine (10s after warm-up to avoid startup noise)
-  loadPricingState();
-  setTimeout(() => {
-    runPricingEngine().catch(e => console.error('[pricing] Initial run failed:', e.message));
-    setInterval(
-      () => runPricingEngine().catch(e => console.error('[pricing] Run error:', e.message)),
-      60 * 60 * 1000
-    );
-    console.log('[pricing] Engine started — runs every 60 minutes');
-  }, 10 * 1000);
+  // Start hourly demand-based pricing engine (10s after warm-up to avoid startup noise).
+  // PRICING_LEGACY_ENGINE=off disables it entirely (kill-switch; default = on).
+  if (!legacyEngineEnabled()) {
+    console.log('[pricing] legacy demand engine DISABLED via PRICING_LEGACY_ENGINE=off');
+  } else {
+    loadPricingState();
+    setTimeout(() => {
+      runPricingEngine().catch(e => console.error('[pricing] Initial run failed:', e.message));
+      setInterval(
+        () => runPricingEngine().catch(e => console.error('[pricing] Run error:', e.message)),
+        60 * 60 * 1000
+      );
+      console.log('[pricing] Engine started — runs every 60 minutes');
+    }, 10 * 1000);
+  }
 }
 
 async function warmUpSeenMessages() {
@@ -674,6 +693,7 @@ async function runPricingEngine() {
   console.log(`[pricing] ── Hourly demand check ${runAt} ──`);
 
   for (const propId of ATLANTA_ALL_IDS) {
+    if (legacyEngineExcluded(propId)) { console.log(`[pricing] ${propId.slice(0, 8)}… skip (excluded via PRICING_LEGACY_EXCLUDE)`); continue; }
     try {
       const rules = getPriceRules(propId);
       const state = pricingState.get(propId) || {
@@ -2879,4 +2899,6 @@ module.exports = {
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
   // cleaning-schedule (exported for dry-run/tests; no SMS send path is touched)
   buildCleaningEntry, getReservationsForDate, buildScheduleSMS, formatSpanishDate, CLEANING_UNITS,
+  // legacy-engine kill-switches (exported for tests)
+  legacyEngineEnabled, legacyEngineExcluded,
 };
