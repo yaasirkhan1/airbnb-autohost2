@@ -112,18 +112,23 @@ async function fetchCalendar(propertyId, start, end) {
 }
 
 // Read back a unit's calendar and verify the sent rows actually landed (price + min_stay).
+// Tolerant of Hospitable's read-after-write lag: retries the read a few times before
+// declaring a mismatch (a real write converges; a true no-op never does → still fails).
 async function readBackVerify(propertyId, rows) {
   const start = rows[0].date, end = addDays(rows[rows.length - 1].date, 1);
-  const cal = await fetchCalendar(propertyId, start, end);
-  if (!isCalendarUsable(cal)) return { verified: false, reason: 'read-back fetch unusable' };
-  const mismatches = [];
-  for (const r of rows) {
-    const got = cal.map[r.date];
-    const gotPrice = got ? got.price : null;
-    if (gotPrice !== r.computed) mismatches.push(`${r.date}: sent $${r.computed}, calendar shows $${gotPrice ?? '?'}`);
-    else if (r.minStay != null && got && got.minStay !== r.minStay) mismatches.push(`${r.date}: min_stay sent ${r.minStay}, shows ${got.minStay}`);
-  }
-  return { verified: mismatches.length === 0, mismatches };
+  return R.verifyWithRetry(async (i) => {
+    const cal = await fetchCalendar(propertyId, start, end);
+    if (!isCalendarUsable(cal)) return { usable: false, reason: 'read-back fetch unusable' };
+    const mismatches = [];
+    for (const r of rows) {
+      const got = cal.map[r.date];
+      const gotPrice = got ? got.price : null;
+      if (gotPrice !== r.computed) mismatches.push(`${r.date}: sent $${r.computed}, calendar shows $${gotPrice ?? '?'}`);
+      else if (r.minStay != null && got && got.minStay !== r.minStay) mismatches.push(`${r.date}: min_stay sent ${r.minStay}, shows ${got.minStay}`);
+    }
+    if (mismatches.length && i === 0) console.log(`    ⏳ read-back stale (${mismatches.length} not yet visible), retrying for propagation…`);
+    return { usable: true, mismatches };
+  });
 }
 
 async function pushSlice(propertyId, rows) {

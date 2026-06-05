@@ -167,6 +167,23 @@ async function withRetry(fn, { retries = 3, baseMs = 500, sleep = ms => new Prom
   }
 }
 
+// ── #14 read-after-write tolerance: don't false-abort on propagation lag ──────────────
+// A PUT can land while an immediate read still returns the stale value (Hospitable is
+// eventually consistent). Retry the verify a few times before declaring a mismatch: a real
+// write CONVERGES within a couple of seconds; a true silent no-op NEVER converges and still
+// fails after all attempts. readOnce(i) returns { usable, reason?, mismatches:[...] }.
+async function verifyWithRetry(readOnce, { attempts = 5, delayMs = 2000, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+  let last = { verified: false, reason: 'no read attempted' };
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(delayMs);
+    const r = await readOnce(i);
+    if (!r || !r.usable) { last = { verified: false, reason: (r && r.reason) || 'read-back fetch unusable', attempts: i + 1 }; continue; }
+    if (!r.mismatches || r.mismatches.length === 0) return { verified: true, attempts: i + 1 };
+    last = { verified: false, mismatches: r.mismatches, attempts: i + 1 };
+  }
+  return last;
+}
+
 // ════════════════════════════════ ROLLBACK (#12) ════════════════════════════════════
 
 // Snapshot the CURRENT calendar state (price + min-stay) for every night about to change,
@@ -274,7 +291,7 @@ module.exports = {
   isDynamicPricingError, detectDynamicPricingFromProperty,
   lockIsStale, acquireLock, releaseLock,
   // self-healing
-  isTransientError, withRetry,
+  isTransientError, withRetry, verifyWithRetry,
   // rollback
   buildSnapshot, snapshotToRollbackRows,
   // detection

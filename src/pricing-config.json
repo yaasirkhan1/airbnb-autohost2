@@ -65,7 +65,7 @@
     { "name": "Ariana Grande", "start": "2026-07-06", "end": "2026-07-08", "tier": "T2", "priceMode": "mult", "mult": 1.4, "minStay": 2 },
     { "name": "August Apparel+Formal", "start": "2026-08-03", "end": "2026-08-07", "tier": "T2", "priceMode": "mult", "mult": 1.25, "minStay": 3 },
     { "name": "AC/DC", "start": "2026-08-27", "end": "2026-08-27", "tier": "T2", "priceMode": "mult", "mult": 1.4, "minStay": 2 },
-    { "name": "Bridge Regional (stacks w/ Dragon Con)", "start": "2026-09-01", "end": "2026-09-07", "tier": "T1", "priceMode": "mult", "mult": 1.8, "minStay": 5 },
+    { "name": "Bridge Regional (stacks w/ Dragon Con)", "start": "2026-09-01", "end": "2026-09-07", "tier": "T1", "priceMode": "set", "price1BR": 179, "price2BR": 199, "minStay": 5 },
     { "name": "DRAGON CON", "start": "2026-09-03", "end": "2026-09-07", "tier": "T1", "priceMode": "set", "price1BR": 500, "price2BR": 695, "minStay": 5 },
     { "name": "Collect-A-Con", "start": "2026-09-26", "end": "2026-09-27", "tier": "T2", "priceMode": "mult", "mult": 1.25, "minStay": 2 },
     { "name": "October Apparel", "start": "2026-10-06", "end": "2026-10-09", "tier": "T2", "priceMode": "mult", "mult": 1.2, "minStay": 3 },

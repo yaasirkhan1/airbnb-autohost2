@@ -138,6 +138,37 @@ ok('withRetry does NOT retry a 4xx (422 dynamic pricing) — one attempt', async
   assert.strictEqual(res.gaveUp, true);
 });
 
+// ════════════════════════ #14 read-after-write tolerance (verifyWithRetry) ════════════════
+ok('verifyWithRetry: stale read then fresh → verified (no false abort)', async () => {
+  const delays = []; let i = -1;
+  const reads = [{ usable: true, mismatches: ['x: stale'] }, { usable: true, mismatches: [] }];
+  const r = await R.verifyWithRetry(() => reads[++i], { attempts: 5, delayMs: 50, sleep: async ms => delays.push(ms) });
+  assert.strictEqual(r.verified, true);
+  assert.strictEqual(r.attempts, 2);          // converged on 2nd read
+  assert.deepStrictEqual(delays, [50]);       // waited once before retrying
+});
+ok('verifyWithRetry: persistent mismatch (true no-op) → fails after all attempts', async () => {
+  let n = 0;
+  const r = await R.verifyWithRetry(() => { n++; return { usable: true, mismatches: ['x: sent $56, shows $105'] }; },
+    { attempts: 4, delayMs: 1, sleep: async () => {} });
+  assert.strictEqual(r.verified, false);
+  assert.strictEqual(n, 4);                    // tried the full budget
+  assert.ok(r.mismatches && r.mismatches.length);
+});
+ok('verifyWithRetry: immediate match → 1 attempt, no delay', async () => {
+  const delays = [];
+  const r = await R.verifyWithRetry(() => ({ usable: true, mismatches: [] }), { delayMs: 99, sleep: async ms => delays.push(ms) });
+  assert.strictEqual(r.verified, true);
+  assert.strictEqual(r.attempts, 1);
+  assert.deepStrictEqual(delays, []);
+});
+ok('verifyWithRetry: unusable read then usable+match → verified', async () => {
+  let i = -1; const reads = [{ usable: false, reason: 'fetch unusable' }, { usable: true, mismatches: [] }];
+  const r = await R.verifyWithRetry(() => reads[++i], { attempts: 3, delayMs: 1, sleep: async () => {} });
+  assert.strictEqual(r.verified, true);
+  assert.strictEqual(r.attempts, 2);
+});
+
 // ════════════════════════ #12 snapshot capture + rollback shaping ═════════════════════════
 ok('buildSnapshot captures current price + min-stay for nights about to change', () => {
   const pushQueue = [{ label: '4-L', propertyId: 'P', rows: [{ date: '2026-09-04' }, { date: '2026-09-05' }] }];
