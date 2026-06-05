@@ -2,7 +2,7 @@
 'use strict';
 const assert = require('assert');
 const { computeNight } = require('../src/pricing-engine');
-const { bookingStateFromCalDay, isNightBooked, isCalendarUsable, runSanityCheck } = require('../src/pricing-guards');
+const { bookingStateFromCalDay, isNightBooked, isCalendarUsable, isPushable, etToday, runSanityCheck } = require('../src/pricing-guards');
 const realConfig = require('../src/pricing-config.json');
 
 let pass = 0; const ok = (n, f) => { f(); console.log('✓', n); pass++; };
@@ -12,7 +12,7 @@ const cfg = (events) => ({
   units: { 'X': { type: '1BR', quality: 'ok', base: 100, floor: 60, ceiling: 300 } },
   seasonal: {}, dayOfWeek: {}, perUnitAdj: { ok: 0 },
   softWeekendFloor: { '1BR': 99, '2BR': 127 }, softFloorReleaseDaysOut: 2,
-  decay: [{ daysOut: 30, mult: 1.0 }], events,
+  decay: [{ daysOut: 30, mult: 1.0 }, { daysOut: 3, mult: 0.5 }], events,
 });
 const FAR = { todayYmd: '2026-01-01', isBooked: false };
 
@@ -87,6 +87,55 @@ ok('event set-price above ceiling is clamped to ceiling', () => {
 ok('event set-price below floor is clamped up to hard floor', () => {
   const r = computeNight(cfg([{ name: 'tiny', start: '2026-10-10', end: '2026-10-20', priceMode: 'set', price1BR: 5 }]), 'X', '2026-10-15', FAR);
   assert.strictEqual(r.price, 60, `should clamp to floor 60, got ${r.price}`);
+});
+
+// ── Fix #4: booked nights are NEVER pushable (absent from push rows) ──
+ok('(#4) booked night is excluded from the push queue (skip too)', () => {
+  assert.strictEqual(isPushable({ skip: false }, true), false, 'booked must not be pushable');
+  assert.strictEqual(isPushable({ skip: true }, false), false, 'skip must not be pushable');
+  assert.strictEqual(isPushable({ skip: false }, false), true, 'normal night is pushable');
+  // end-to-end on the engine path: a booked night still computes a price, but the runner's
+  // gate (isPushable) keeps it out of rows. Prove the gate rejects it.
+  const res = computeNight(cfg([]), 'X', '2026-10-21', { todayYmd: '2026-10-15', isBooked: true });
+  assert.ok(res.price != null);                 // engine still returns a number
+  assert.strictEqual(isPushable(res, true), false); // ...but it is NOT pushable
+});
+
+// ── Fix #7: null / low-coverage current data HALTS ──
+ok('(#7) all-null current prices HALT (not "0% changed → safe")', () => {
+  const r = runSanityCheck([{ oldPrice: null, newPrice: 84 }, { oldPrice: null, newPrice: 99 }], {});
+  assert.strictEqual(r.halt, true);
+  assert.ok(r.reasons.some(x => /coverage/.test(x)));
+});
+ok('(#7) coverage below 50% HALTs', () => {
+  const rows = [{ oldPrice: 100, newPrice: 100 }, { oldPrice: null, newPrice: 90 }, { oldPrice: null, newPrice: 90 }]; // 33% coverage
+  const r = runSanityCheck(rows, { minCoveragePct: 50 });
+  assert.strictEqual(r.halt, true);
+  assert.ok(r.reasons.some(x => /coverage/.test(x)));
+});
+ok('(#7) full coverage, small moves → no halt', () => {
+  const r = runSanityCheck([{ oldPrice: 100, newPrice: 100 }, { oldPrice: 100, newPrice: 105 }], { minCoveragePct: 50 });
+  assert.strictEqual(r.halt, false);
+});
+
+// ── Fix #6: today anchored to America/New_York, not UTC ──
+ok('(#6) etToday resolves a late-ET instant to the correct ET date (not next UTC day)', () => {
+  // 2026-06-05T01:30Z == 2026-06-04 21:30 ET → ET date must be 06-04
+  assert.strictEqual(etToday(new Date('2026-06-05T01:30:00Z')), '2026-06-04');
+  // midday is unambiguous
+  assert.strictEqual(etToday(new Date('2026-06-05T16:00:00Z')), '2026-06-05');
+});
+
+// ── Fix #1: event price outside [floor,ceiling] is flagged (clamped.onEvent) ──
+ok('(#1) event set-price above ceiling is clamped AND flagged (onEvent)', () => {
+  const r = computeNight(cfg([{ name: 'huge', start: '2026-10-10', end: '2026-10-20', priceMode: 'set', price1BR: 9999 }]), 'X', '2026-10-15', FAR);
+  assert.strictEqual(r.price, 300);
+  assert.ok(r.clamped && r.clamped.onEvent === true && r.clamped.bound === 'ceiling' && r.clamped.from === 9999);
+});
+ok('(#1) routine decay-to-floor on a NON-event night is not flagged as an event clamp', () => {
+  // deep decay below floor on a normal weekday → clamps to floor but onEvent=false
+  const r = computeNight(cfg([]), 'X', '2026-10-19', { todayYmd: '2026-10-18', isBooked: false }); // 1 day out, mult well below
+  if (r.clamped) assert.strictEqual(r.clamped.onEvent, false);
 });
 
 console.log(`\n${pass} passed`);

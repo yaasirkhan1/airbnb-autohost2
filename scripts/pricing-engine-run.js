@@ -18,7 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const { computeNight } = require('../src/pricing-engine');
-const { isCalendarUsable, isNightBooked, runSanityCheck } = require('../src/pricing-guards');
+const { isCalendarUsable, isNightBooked, isPushable, etToday, runSanityCheck } = require('../src/pricing-guards');
 const config = require('../src/pricing-config.json');
 
 const TOK = (() => {
@@ -43,7 +43,7 @@ const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function parseArgs(argv) {
   const a = { days: 365, swing: 40, confirm: false, units: null, start: null, end: null,
-    batch: 0, overrideSanity: false, sanityChanged: 80, sanityMove: 60 };
+    batch: 0, overrideSanity: false, sanityChanged: 80, sanityMove: 60, sanityCoverage: 50 };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--confirm') a.confirm = true;
@@ -53,6 +53,7 @@ function parseArgs(argv) {
     else if (v === '--swing') a.swing = parseInt(argv[++i], 10);
     else if (v === '--sanity-changed') a.sanityChanged = parseInt(argv[++i], 10);
     else if (v === '--sanity-move') a.sanityMove = parseInt(argv[++i], 10);
+    else if (v === '--sanity-coverage') a.sanityCoverage = parseInt(argv[++i], 10);
     else if (v === '--unit') a.units = argv[++i].split(',').map(s => s.trim().toUpperCase());
     else if (v === '--start') a.start = argv[++i];
     else if (v === '--end') a.end = argv[++i];
@@ -109,7 +110,7 @@ async function pushSlice(propertyId, rows) {
 
 (async () => {
   const args = parseArgs(process.argv.slice(2));
-  const today = ymd(new Date());
+  const today = etToday(); // America/New_York, not UTC — evening runs keep the right lead-time
   const start = args.start || today;
   const end = args.end || addDays(start, args.days - 1);
   const unitLabels = args.units || Object.keys(config.units);
@@ -117,7 +118,7 @@ async function pushSlice(propertyId, rows) {
   console.log(`PRICING ENGINE RUN — ${start} → ${end} | units: ${unitLabels.join(', ')} | swing>${args.swing}% | ${args.confirm ? (args.batch ? `CONFIRM (batch ${args.batch})` : 'CONFIRM (push)') : 'DRY RUN'}`);
   console.log(`today=${today} | sanity: halt if >${args.sanityChanged}% change or any move >${args.sanityMove}%${args.overrideSanity ? ' (OVERRIDDEN)' : ''}\n`);
 
-  let totalNights = 0, totalSwings = 0, totalBooked = 0, totalSkipped = 0, totalOverlaps = 0;
+  let totalNights = 0, totalSwings = 0, totalBooked = 0, totalSkipped = 0, totalOverlaps = 0, totalClamps = 0;
   const skippedUnits = [];
   const allRows = [];      // for the run-level sanity check
   const pushQueue = [];
@@ -142,16 +143,23 @@ async function pushSlice(propertyId, rows) {
       const res = computeNight(config, label, date, { todayYmd: today, isBooked: booked });
       const dow = DOW[new Date(date + 'T00:00:00Z').getUTCDay()];
 
+      // SKIP zone and BOOKED nights NEVER enter the push queue (isPushable). A booked
+      // night the guest already holds is never repriced — shown but not queued.
       if (res.skip) {
         console.log(`  ${date} ${dow}  SKIP (${res.event} — handled separately)` + (booked ? '  [BOOKED]' : ''));
         totalSkipped++;
+        continue;
+      }
+      if (!isPushable(res, booked)) { // booked
+        console.log(`  ${date} ${dow}  $${cur ?? '?'}  [BOOKED — left alone, not repriced]`);
+        totalBooked++;
         continue;
       }
 
       const delta = cur != null ? res.price - cur : null;
       const pct = cur ? Math.round((delta / cur) * 100) : null;
       const swing = pct != null && Math.abs(pct) > args.swing;
-      totalNights++; if (swing) totalSwings++; if (booked) totalBooked++;
+      totalNights++; if (swing) totalSwings++;
 
       let overlapStr = '';
       if (res.overlaps) {
@@ -159,25 +167,30 @@ async function pushSlice(propertyId, rows) {
         const losers = res.overlaps.filter(o => o.name !== res.event).map(o => `${o.name.slice(0, 18)}→$${o.price}`).join(', ');
         overlapStr = `  ⚠OVERLAP won=[${(res.event || '').slice(0, 18)}→$${res.price}] over [${losers}]`;
       }
+      let clampStr = '';
+      if (res.clamped && res.clamped.onEvent) {
+        totalClamps++;
+        clampStr = `  ⚠CLAMP event price $${res.clamped.from}→$${res.clamped.to} (${res.clamped.bound})`;
+      }
 
       rows.push({ date, computed: res.price, minStay: res.minStay, oldPrice: cur, newPrice: res.price });
       allRows.push({ oldPrice: cur, newPrice: res.price });
       const deltaStr = cur != null ? `Δ${delta >= 0 ? '+' : ''}$${delta} (${pct >= 0 ? '+' : ''}${pct}%)` : 'Δ n/a';
       console.log(
         `  ${date} ${dow}  $${cur ?? '?'}→$${res.price}  ${deltaStr}  min:${res.minStay ?? '-'}` +
-        (res.event ? `  [${res.event.slice(0, 24)}]` : '') + (booked ? '  [BOOKED]' : '') + (swing ? '  ⚠SWING' : '') + overlapStr
+        (res.event ? `  [${res.event.slice(0, 24)}]` : '') + (swing ? '  ⚠SWING' : '') + overlapStr + clampStr
       );
     }
     pushQueue.push({ label, propertyId: u.propertyId, rows });
   }
 
   // ---- Run-level sanity check ----
-  const sanity = runSanityCheck(allRows, { maxChangedPct: args.sanityChanged, maxMovePct: args.sanityMove });
+  const sanity = runSanityCheck(allRows, { maxChangedPct: args.sanityChanged, maxMovePct: args.sanityMove, minCoveragePct: args.sanityCoverage });
 
   console.log(`\n================ SUMMARY ================`);
-  console.log(`${totalNights} priced | ${totalSwings} swing>${args.swing}% | ${totalBooked} booked | ${totalSkipped} WC-skip | ${totalOverlaps} overlap | ${skippedUnits.length} unit(s) skipped`);
+  console.log(`${totalNights} priced | ${totalSwings} swing>${args.swing}% | ${totalBooked} booked (left alone) | ${totalSkipped} WC-skip | ${totalOverlaps} overlap | ${totalClamps} event-clamp | ${skippedUnits.length} unit(s) skipped`);
   if (skippedUnits.length) console.log(`skipped units (wrote nothing): ${skippedUnits.join('; ')}`);
-  console.log(`sanity: ${sanity.changedPct}% of ${sanity.totalWithCurrent} nights would change, max move ${sanity.maxMovePct}% → ${sanity.halt ? '⛔ HALT' : 'ok'}`);
+  console.log(`sanity: ${sanity.changedPct}% of ${sanity.totalWithCurrent} changed, ${sanity.coveragePct}% coverage, max move ${sanity.maxMovePct}% → ${sanity.halt ? '⛔ HALT' : 'ok'}`);
   if (sanity.halt) sanity.reasons.forEach(r => console.log(`  ✗ ${r}`));
 
   if (!args.confirm) { console.log('\nDRY RUN — nothing written to Hospitable.'); return; }

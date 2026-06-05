@@ -188,10 +188,15 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
     const swfVal = (swf && typeof swf === 'object') ? swf[unit.type] : swf;
     if (!released) floorUsed = Math.max(hardFloor, swfVal || hardFloor);
   }
-  if (price < floorUsed) price = floorUsed;
+  // Record clamps so they're never silent. onEvent=true means an EVENT-driven price
+  // landed outside [floor, ceiling] — the signature of a misconfigured event price the
+  // preview must surface (vs routine decay-to-floor on a normal night).
+  let clamped = null;
+  const preClamp = Math.round(price);
+  if (price < floorUsed) { clamped = { bound: 'floor', from: preClamp, to: floorUsed, onEvent: !!ev }; price = floorUsed; }
 
   // ---- Ceiling ----
-  if (price > unit.ceiling) price = unit.ceiling;
+  if (price > unit.ceiling) { clamped = { bound: 'ceiling', from: preClamp, to: unit.ceiling, onEvent: !!ev }; price = unit.ceiling; }
 
   price = Math.round(price);
 
@@ -208,6 +213,7 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
     event: ev ? ev.name : null,
     leadDays,
     layers,
+    clamped,
     // Overlap transparency: present only when 2+ priced events covered this date.
     overlaps: alternatives.length >= 2 ? alternatives : undefined
   };
