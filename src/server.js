@@ -1222,9 +1222,16 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
 // sees the real conversation (what it already said + what the guest actually asked).
 //   guest (sender_type/sender_role) → {role:'user'};  host/co-host/teammate → {role:'assistant'}.
 // Chronological; empty-body messages skipped; consecutive same-role turns merged
-// (the API wants alternating roles); capped to the last `cap` turns; leading
-// assistant turns dropped (the array must start with a user turn); and guaranteed
+// (the API wants alternating roles); capped to the last `cap` turns; and guaranteed
 // to end with the latest guest message.
+//
+// The Anthropic messages array MUST start with a user turn, so any leading host
+// (assistant) turns are removed from `messages` — but their content is NOT discarded.
+// It is returned in `priorContext` so the caller can fold it into the SYSTEM prompt
+// ("messages already sent to this guest"). This is the fix for the bug where the
+// first host turn (often the check-in details we already sent — door code, Wi-Fi,
+// access) was silently deleted, leaving the model unaware it had been covered.
+// Returns: { messages: [{role, content}], priorContext: string }.
 function buildThreadMessages(thread, latestBody, cap = 12) {
   const HOST_ROLES = new Set(['host', 'co-host', 'teammate']);
   const roleOf = m => (HOST_ROLES.has(m.sender_role || m.sender_type) ? 'assistant' : 'user');
@@ -1256,8 +1263,24 @@ function buildThreadMessages(thread, latestBody, cap = 12) {
     if (prev && prev.role === t.role) prev.content += `\n\n${t.content}`;
     else merged.push({ role: t.role, content: t.content });
   }
-  while (merged.length && merged[0].role !== 'user') merged.shift();
-  return merged;
+  // Leading host turns can't lead the messages array, but their content must NOT be
+  // lost — capture it so the caller folds it into the system prompt.
+  const droppedLeading = [];
+  while (merged.length && merged[0].role !== 'user') droppedLeading.push(merged.shift());
+  const priorContext = droppedLeading.map(t => t.content).join('\n\n').trim();
+  return { messages: merged, priorContext };
+}
+
+// Markers that mean check-in / access info has already been delivered to the guest.
+const CHECKIN_MARKER_REGEX = /\b(door\s*code|lock\s*code|access\s*code|entry\s*code|gate\s*code|wi-?fi|password|access\s*instruction|check-?in\s*(details|instruction|info)|how\s*to\s*(get\s*in|access|enter))\b/i;
+
+// True if any HOST message in the thread already contains check-in/access details.
+// Used to harden the model against promising info it has already sent.
+function checkinAlreadySent(thread) {
+  const HOST_ROLES = new Set(['host', 'co-host', 'teammate']);
+  return (thread || []).some(m =>
+    HOST_ROLES.has(m.sender_role || m.sender_type) && CHECKIN_MARKER_REGEX.test(m.body || '')
+  );
 }
 
 async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null) {
@@ -1403,11 +1426,27 @@ ${JSON_INSTRUCTIONS}`;
   if (resourceType === 'reservation' && resourceId) {
     try {
       const thread = await fetchMessagesForReservation(resourceId);
-      const messages = buildThreadMessages(thread, messageBody, 12);
+      const { messages, priorContext } = buildThreadMessages(thread, messageBody, 12);
       if (messages.length) {
         promptInput = messages;
         console.log(`[draft] Thread history: ${messages.length} turn(s) for reservation ${resourceId}`);
       }
+
+      // Fold thread-derived facts into a NON-cached system block (per-conversation,
+      // must sit after the cache breakpoint). Two guards:
+      //  1. priorContext — leading host turns that can't lead the messages array
+      //     (Anthropic needs a user-first array). Without this, the very first thing
+      //     we sent (often the check-in details) is invisible to the model.
+      //  2. checkinAlreadySent — explicit instruction so the model never promises
+      //     check-in info that has already been delivered.
+      const threadNotes = [];
+      if (priorContext) {
+        threadNotes.push(`Messages you have ALREADY sent to this guest earlier in this thread (already covered — do NOT repeat them or contradict them):\n${priorContext}`);
+      }
+      if (checkinAlreadySent(thread)) {
+        threadNotes.push(`IMPORTANT: Check-in details (door code, Wi-Fi, building/front-desk access instructions) have ALREADY been sent to this guest in this thread. NEVER say check-in details are forthcoming, "coming soon", or that you will send them later — the guest already has them.`);
+      }
+      if (threadNotes.length) systemBlocks.push({ type: 'text', text: threadNotes.join('\n\n') });
     } catch (e) {
       console.warn(`[draft] thread fetch failed (${e.message}) — falling back to single message`);
     }
@@ -2898,7 +2937,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 // start the server thanks to the `require.main === module` guard around app.listen.
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX,
-  buildThreadMessages, fetchMessagesForReservation, fetchReservationsForProperty,
+  buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
   // cleaning-schedule (exported for dry-run/tests; no SMS send path is touched)
   buildCleaningEntry, getReservationsForDate, buildScheduleSMS, formatSpanishDate, CLEANING_UNITS,
