@@ -11,7 +11,7 @@ const { savePending, loadPending, partitionPending } = require('./pending-store'
 const { decideAlert, loadAlerts, saveAlerts } = require('./alert-store');
 const { parseDraftReply } = require('./draft-parse');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
-const { tomorrowInTZ, needsCleaning: needsCleaningCheck, dateInTimeZone } = require('./cleaning-schedule');
+const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms } = require('./concierge-email');
@@ -2512,13 +2512,19 @@ function dateOffset(dateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 
-// Fetch ALL reservations for a property (no status filter) matching a specific date
+// Fetch reservations around a target date and split into check-outs / check-ins on that date.
+// DATE-BOUNDED on purpose: an unbounded per_page=50 pull silently dropped a departing
+// reservation (it returns an arbitrary window), so a real checkout could be missed. We query a
+// [target-30 .. target+1] window (overlap-based) so any in-progress stay departing on the target
+// — even a long one — is returned. Only ACTIVE (non-cancelled) reservations count.
 async function getReservationsForDate(propertyId, dateStr) {
   try {
+    const startBound = dateOffset(dateStr, -30);
+    const endBound   = dateOffset(dateStr, 1);
     const data = await hospGet(
-      `/reservations?properties[]=${propertyId}&per_page=50&include=guest`
+      `/reservations?properties[]=${propertyId}&start_date=${startBound}&end_date=${endBound}&per_page=100&include=guest`
     );
-    const reservations = parseReservations(data);
+    const reservations = parseReservations(data).filter(isActiveReservation);
     const coField = r => (r.check_out || r.checkout || r.check_out_date || r.departure_date || r.end_date || r.departure || '').slice(0, 10);
     const ciField = r => (r.check_in  || r.checkin  || r.check_in_date  || r.arrival_date  || r.start_date || r.arrival || '').slice(0, 10);
     const outgoing = reservations.filter(r => coField(r) === dateStr);
@@ -2530,55 +2536,19 @@ async function getReservationsForDate(propertyId, dateStr) {
   }
 }
 
-// PRIMARY detection: calendar-based occupancy check.
-//
-// Rules:
-//   needsCleaning:      priorDay is RESERVED (not just USER-blocked) AND targetDay is free
-//   hasSameDayIncoming: cleaning needed AND the reservations API confirms a new check-in on targetDate
-//
-// Why filter on reason==="RESERVED":
-//   - "RESERVED" = Airbnb guest booked → cleaning needed after departure
-//   - "BLOCKED" + source_type="USER" = host manually blocked, no guest → no cleaning needed
-//
-// Why use reservations to confirm back-to-back (not just calendar):
-//   - Two consecutive RESERVED days could be the same multi-night guest (no checkout yet)
-//     or two different guests (back-to-back). The calendar alone cannot distinguish them.
-async function getCalendarOccupancy(propertyId, targetDate) {
-  const priorDate = dateOffset(targetDate, -1);
-  try {
-    const data = await hospGet(
-      `/properties/${propertyId}/calendar?start_date=${priorDate}&end_date=${targetDate}`
-    );
-    const days = data?.data?.days || data?.days || (Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []));
-    const dayMap = Object.fromEntries(days.map(d => [d.date, d]));
-
-    const priorDay  = dayMap[priorDate];
-    const targetDay = dayMap[targetDate];
-
-    const priorReason    = priorDay?.status?.reason;
-    const targetAvailable = targetDay?.status?.available;
-
-    console.log(`[cleaning] ${propertyId.slice(0,8)}… calendar prior(${priorDate}): reason=${priorReason} avail=${priorDay?.status?.available} | target(${targetDate}): reason=${targetDay?.status?.reason} avail=${targetAvailable}`);
-
-    // Only flag cleaning if prior night had an actual RESERVATION (not a manual USER block)
-    return { needsCleaning: needsCleaningCheck(priorDay, targetDay) };
-  } catch (e) {
-    console.error(`[cleaning] Calendar lookup FAILED for ${propertyId}: ${e.message}`);
-    return { needsCleaning: false };
-  }
-}
-
 async function buildCleaningEntry(unit, tomorrow) {
-  // Step 1: calendar confirms a guest checked out this morning
-  const { needsCleaning } = await getCalendarOccupancy(unit.id, tomorrow);
+  // SOURCE OF TRUTH: a CHECKOUT on the target date means a turnover → cleaning needed.
+  // (The old calendar gate required the target day to be FREE, which wrongly dropped every
+  //  same-day turnover — a turnover makes the target day RESERVED by the incoming guest. The
+  //  reservations API tells us checkouts directly and distinguishes a back-to-back from a
+  //  continuing multi-night stay, which the calendar alone cannot.)
+  const { outgoing, incoming } = await getReservationsForDate(unit.id, tomorrow);
+  const { needsCleaning, sameDayTurnover } = classifyTurnover(outgoing, incoming);
+  console.log(`[cleaning] ${unit.label} (${unit.id.slice(0,8)}…) ${tomorrow}: checkouts=${outgoing.length} checkins=${incoming.length} → ${needsCleaning ? (sameDayTurnover ? 'TURNOVER (priority)' : 'cleaning') : 'skip'}`);
   if (!needsCleaning) return null;
 
-  // Step 2: reservations API for enrichment — late checkout/early check-in message analysis
-  // and to detect same-day incoming guest (back-to-back)
-  const { outgoing, incoming } = await getReservationsForDate(unit.id, tomorrow);
-
-  // Back-to-back confirmed only if the reservations API has an actual incoming check-in today
-  const hasSameDayIncoming = incoming.length > 0;
+  // Same-day turnover (a check-in on the same date as the checkout) = highest priority.
+  const hasSameDayIncoming = sameDayTurnover;
 
   // --- Vacancy time ---
   let vacancyTime      = '11:00AM';
@@ -2620,6 +2590,27 @@ function formatCleaningLine(entry) {
   return `• ${entry.label} — ${deadPart}, ${vacPart}`;
 }
 
+// Pure: assemble the SMS body from cleaning entries (priority/regular split). Exported so a
+// dry-run can render the exact message without sending anything.
+function buildScheduleSMS(entries, spanishDate) {
+  if (!entries || entries.length === 0) {
+    return `🧹 Sin limpiezas — ${spanishDate}\n— Peachtree Tower Rentals`;
+  }
+  const priority = entries.filter(e => e.priority);
+  const regular  = entries.filter(e => !e.priority);
+  const lines    = [];
+  if (priority.length > 0) {
+    lines.push('⚡ URGENTE (huésped entrante mismo día):');
+    priority.forEach(e => lines.push(formatCleaningLine(e)));
+  }
+  if (regular.length > 0) {
+    if (priority.length > 0) lines.push('');
+    lines.push('Limpieza regular:');
+    regular.forEach(e => lines.push(formatCleaningLine(e)));
+  }
+  return `🧹 Limpieza — ${spanishDate}\n\n${lines.join('\n')}\n\n— Peachtree Tower Rentals`;
+}
+
 async function sendCleaningSchedule() {
   const tomorrow    = tomorrowDateString();
   const spanishDate = formatSpanishDate(tomorrow);
@@ -2632,27 +2623,7 @@ async function sendCleaningSchedule() {
     await new Promise(r => setTimeout(r, 200));
   }
 
-  let smsBody;
-  if (entries.length === 0) {
-    smsBody = `🧹 Sin limpiezas — ${spanishDate}\n— Peachtree Tower Rentals`;
-  } else {
-    const priority = entries.filter(e => e.priority);
-    const regular  = entries.filter(e => !e.priority);
-    const lines    = [];
-
-    if (priority.length > 0) {
-      lines.push('⚡ URGENTE (huésped entrante mismo día):');
-      priority.forEach(e => lines.push(formatCleaningLine(e)));
-    }
-    if (regular.length > 0) {
-      if (priority.length > 0) lines.push('');
-      lines.push('Limpieza regular:');
-      regular.forEach(e => lines.push(formatCleaningLine(e)));
-    }
-
-    smsBody = `🧹 Limpieza — ${spanishDate}\n\n${lines.join('\n')}\n\n— Peachtree Tower Rentals`;
-  }
-
+  const smsBody = buildScheduleSMS(entries, spanishDate);
   console.log(`[cleaning] SMS:\n${smsBody}`);
 
   const apiKey    = process.env.QUO_API_KEY;
@@ -2895,4 +2866,6 @@ module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX,
   buildThreadMessages, fetchMessagesForReservation, fetchReservationsForProperty,
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
+  // cleaning-schedule (exported for dry-run/tests; no SMS send path is touched)
+  buildCleaningEntry, getReservationsForDate, buildScheduleSMS, formatSpanishDate, CLEANING_UNITS,
 };

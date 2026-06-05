@@ -25,10 +25,33 @@ function tomorrowInTZ(now = new Date(), tz = 'America/New_York') {
   return dateOffset(dateInTimeZone(now, tz), 1);
 }
 
-// A unit needs cleaning when the prior night was an actual RESERVATION (a guest,
-// not a manual USER block) and the target day is not still occupied.
-function needsCleaning(priorDay, targetDay) {
-  return priorDay?.status?.reason === 'RESERVED' && targetDay?.status?.available !== false;
+// Reservation statuses that do NOT represent a real, calendar-occupying stay — these never
+// imply a cleaning. Denylist (not allowlist) on purpose: an UNKNOWN status is treated as
+// active so we err toward flagging a cleaning rather than silently missing a turnover.
+const DEAD_RESERVATION_STATUSES = new Set([
+  'cancelled', 'canceled', 'declined', 'not_possible', 'not possible',
+  'expired', 'denied', 'withdrawn', 'inquiry', 'request', 'pending',
+]);
+function isActiveReservation(r) {
+  const s = String((r && (r.status || r.reservation_status)) || '').toLowerCase();
+  return !DEAD_RESERVATION_STATUSES.has(s);
 }
 
-module.exports = { dateInTimeZone, dateOffset, tomorrowInTZ, needsCleaning };
+// A unit needs cleaning when a guest CHECKS OUT on the target date — a departure creates the
+// turnover, period. Whether a NEW guest also checks in that same date does NOT change *whether*
+// a cleaning is needed; it only raises the PRIORITY. A same-day turnover (checkout AND check-in
+// on the target date) is the highest-priority cleaning, never a skip.
+//   outgoing: reservations whose check_out === target date (active only)
+//   incoming: reservations whose check_in  === target date (active only)
+function classifyTurnover(outgoing, incoming) {
+  const checkouts = (outgoing || []).length;
+  const checkins  = (incoming  || []).length;
+  return {
+    needsCleaning:   checkouts > 0,
+    sameDayTurnover: checkouts > 0 && checkins > 0,
+    checkouts,
+    checkins,
+  };
+}
+
+module.exports = { dateInTimeZone, dateOffset, tomorrowInTZ, isActiveReservation, classifyTurnover };
