@@ -43,12 +43,12 @@ ok('knockout (Jul 1, Jul 7) 300→250 / 380→338', () => {
   assert.ok(/knockout/i.test(at('23-N', '2026-07-01', 7).event));
 });
 
-ok('semifinal (Jul 15) 375→350 / 475→420, min 2 hold', () => {
+ok('semifinal (Jul 15) 375→350 / 475→420, min 2→1 (WC rule)', () => {
   assert.strictEqual(at('23-N', '2026-07-15', 7).price, 375);
   assert.strictEqual(at('23-N', '2026-07-15', 0).price, 350);
   assert.strictEqual(at('21-I', '2026-07-15', 7).price, 475);
   assert.strictEqual(at('21-I', '2026-07-15', 0).price, 420);
-  assert.strictEqual(at('23-N', '2026-07-15', 0).minStay, 2);
+  assert.strictEqual(at('23-N', '2026-07-15', 0).minStay, 1);
   assert.strictEqual(at('23-N', '2026-07-15', 7).minStay, 2);
 });
 

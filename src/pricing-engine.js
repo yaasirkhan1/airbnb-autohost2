@@ -242,7 +242,7 @@ function computeNight(config, unitLabel, dateYmd, opts = {}) {
     ? (ev.priceMode === 'glide'
         ? glideMinStay(ev.minStayHigh, ev.minStayLow, ev.easeStartDays != null ? ev.easeStartDays : 30, leadDays)
         : resolveMinStay(ev.minStay, leadDays))
-    : null;
+    : 1; // non-event nights: floor at a 1-night minimum (was null/unset)
 
   return {
     unit: unitLabel,
