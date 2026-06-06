@@ -15,7 +15,7 @@ const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } =
 const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = require('./cleaning-schedule');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
-const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms } = require('./concierge-email');
+const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms, conciergeSms } = require('./concierge-email');
 const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-properties');
 const { resolveReplyTarget } = require('./reply-target');
 const { loadKnowledgeBase } = require('./knowledge-base');
@@ -577,15 +577,20 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
         continue; // handled this message
       }
 
-      // Non-concierge: best-effort AI email on a regex miss (NON-BLOCKING — never
-      // slows the normal reply). On an AI hit, the host still gets the SENT/FAILED SMS.
-      decideConciergeHit(conciergeText, false, `poll/${tag}`)
-        .then(hit => {
-          if (hit) {
-            runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context: `poll/${tag}/ai` }).catch(() => {});
-          }
-        })
-        .catch(e => console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`));
+      // Non-concierge regex MISS → consult the AI classifier (detection logic unchanged).
+      // If it confirms a front-desk hit, run the SAME await-gated contingency as the regex
+      // path (email → concierge SMS → guest confirmation) and SKIP the generic draft.
+      // Awaiting here (vs the old fire-and-forget) is deliberate: it closes the race where
+      // the guest reply was composed before the email outcome was known, and ensures the
+      // guest gets the front-desk confirmation instead of a generic/empty reply.
+      let aiConciergeHit = false;
+      try { aiConciergeHit = await decideConciergeHit(conciergeText, false, `poll/${tag}`); }
+      catch (e) { console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`); }
+      if (aiConciergeHit) {
+        const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context: `poll/${tag}/ai` });
+        scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
+        continue; // concierge path handled this message — skip the generic draftReply
+      }
 
       try {
         const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId, false, resourceId, resourceType);
@@ -843,11 +848,14 @@ async function runConciergeContingency({ guestName, propertyId, resourceId, reso
   const propMap   = loadPropertiesMap();
   const unitLabel = propMap[propertyId]?.label || propMap[propertyId]?.unit || `unit (${(propertyId || '').slice(0, 8)})`;
   const notifyAll = process.env.CONCIERGE_NOTIFY_ALL !== 'false'; // trial: default ON; set false to revert to failure-only
+  const conciergeEmailTo = process.env.CONCIERGE_EMAIL_TO || '300ptconcierge@gmail.com';
+  const conciergePhone   = process.env.CONCIERGE_PHONE; // front-desk SMS recipient (unset → sendOpenPhoneSms no-ops with a warn)
   const res = await resolveConciergeReply({
     guestName, unitLabel, notifyAll,
-    sendEmail:     () => sendConciergeEmail({ guestName, propertyId, resourceId, resourceType }),
-    notifySuccess: (text) => notifyHostRaw(text),
-    escalate:      (e) => notifyHostRaw(conciergeFailedSms({ guestName, unitLabel, error: e })),
+    sendEmail:       () => sendConciergeEmail({ guestName, propertyId, resourceId, resourceType }),
+    notifyConcierge: () => sendOpenPhoneSms(conciergePhone, conciergeSms({ guestName, unitLabel, conciergeEmail: conciergeEmailTo })),
+    notifySuccess:   (text) => notifyHostRaw(text),
+    escalate:        (e) => notifyHostRaw(conciergeFailedSms({ guestName, unitLabel, error: e })),
   });
   console.log(`[${context}] concierge ${res.ok ? `email OK → guest confirmed${notifyAll ? ' + host SMS (SENT)' : ''}` : 'email FAILED → honest reply + host escalated'}`);
   return res;
@@ -903,6 +911,31 @@ async function notifyHostRaw(text) {
     // LOUD on purpose: a failed host alert (e.g. OpenPhone 402 out-of-credits) must
     // never be a quiet one-liner — this means the host was NOT notified at all.
     console.error(`[notify] ❗❗ HOST ALERT NOT DELIVERED — OpenPhone SMS FAILED: ${e.message} | undelivered text: "${text.slice(0, 160)}"`);
+  }
+}
+
+// Generic OpenPhone sender to an ARBITRARY recipient (modeled on the cleaning-SMS sender).
+// notifyHostRaw stays NOTIFY_PHONE-only by design; this one takes a `to` so we can text the
+// front desk (CONCIERGE_PHONE). Never throws — returns {ok}. No-op (warn) if creds/recipient missing.
+async function sendOpenPhoneSms(to, text) {
+  const apiKey = process.env.QUO_API_KEY;
+  const from   = process.env.QUO_FROM_NUMBER;
+  if (!apiKey || !from || !to) {
+    console.warn(`[sms] (no creds or no recipient: to=${to || 'unset'}) would send: "${String(text).slice(0, 120)}"`);
+    return { ok: false, skipped: true };
+  }
+  try {
+    const res = await fetch('https://api.openphone.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: [to], from, content: String(text).slice(0, 1000) }),
+    });
+    if (!res.ok) throw new Error(`OpenPhone ${res.status}: ${await res.text()}`);
+    console.log(`[sms] sent to ${to}: "${String(text).slice(0, 80)}"`);
+    return { ok: true };
+  } catch (e) {
+    console.error(`[sms] ❗ SMS to ${to} FAILED: ${e.message}`);
+    return { ok: false, error: e };
   }
 }
 
@@ -1663,15 +1696,20 @@ app.post('/webhook/hospitable', (req, res, next) => {
     return; // handled this message
   }
 
-  // Non-concierge: best-effort AI email on a regex miss (NON-BLOCKING — never slows
-  // the normal reply). On an AI hit, the host still gets the SENT/FAILED SMS.
-  decideConciergeHit(conciergeText, false, 'webhook')
-    .then(hit => {
-      if (hit) {
-        runConciergeContingency({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType, propertyName, context: 'webhook/ai' }).catch(() => {});
-      }
-    })
-    .catch(e => console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`));
+  // Non-concierge regex MISS → consult the AI classifier (detection logic unchanged). If it
+  // confirms a front-desk hit, run the SAME await-gated contingency as the regex path
+  // (email → concierge SMS → guest confirmation) and SKIP the generic draft. Awaiting here
+  // (vs the old fire-and-forget) closes the race where the guest reply was composed before
+  // the email outcome was known, and ensures the guest gets the front-desk confirmation.
+  let aiConciergeHit = false;
+  try { aiConciergeHit = await decideConciergeHit(conciergeText, false, 'webhook'); }
+  catch (e) { console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`); }
+  if (aiConciergeHit) {
+    const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType, propertyName, context: 'webhook/ai' });
+    scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
+    console.log(`[webhook] ✓ Concierge (AI) reply scheduled via ${replyResourceType} ${replyResourceId}`);
+    return; // concierge path handled this message — skip the generic draftReply
+  }
 
   try {
     const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId, false, replyResourceId, replyResourceType);
@@ -2938,6 +2976,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX,
   buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
+  sendOpenPhoneSms,
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
   // cleaning-schedule (exported for dry-run/tests; no SMS send path is touched)
   buildCleaningEntry, getReservationsForDate, buildScheduleSMS, formatSpanishDate, CLEANING_UNITS,

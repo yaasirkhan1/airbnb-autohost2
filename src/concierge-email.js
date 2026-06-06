@@ -5,8 +5,10 @@
 
 function buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, code }) {
   const conf = code || 'N/A';
-  const subject = `Check-In Info for Guest in ${unitLabel} | ${checkIn} - ${checkOut}`;
-  const body = `Hi,
+  const subject = `[Office of Mr. Yaasir Khan] Check-In Authorization — ${unitLabel} | ${checkIn} - ${checkOut}`;
+  const body = `Hello,
+
+This is an automated message from the office of Mr. Yaasir Khan (Peachtree Tower Rentals). This is a legitimate, authorized check-in request for one of our guests — not spam or a phishing attempt.
 
 Please allow ${guestName} to access unit ${unitLabel}.
 
@@ -19,7 +21,7 @@ Check-Out: ${checkOut}
 Please grant this guest full access to the unit for the duration of their stay.
 
 Thank you,
-Yasser Khan
+The Office of Mr. Yaasir Khan
 Peachtree Tower Rentals`;
   return { subject, body };
 }
@@ -51,6 +53,13 @@ function conciergeFailureReply(guestName) {
 function conciergeSentSms({ guestName, unitLabel }) {
   return `✅ Front-desk email SENT for ${guestName} / ${unitLabel} — guest told to check with the concierge.`;
 }
+
+// Front-desk/concierge SMS — sent to CONCIERGE_PHONE after the email succeeds, giving the
+// desk a heads-up to check their inbox. Mirrors the email's "office of Mr. Yaasir Khan"
+// legitimacy framing (the desk previously suspected the email was a scam).
+function conciergeSms({ guestName, unitLabel, conciergeEmail }) {
+  return `This is an automated message from the office of Mr. Yaasir Khan. ${guestName} (Unit ${unitLabel}) is checking in and Mr. Khan is currently unavailable. A supplementary form with their reservation details was just emailed to ${conciergeEmail} — please check your inbox to grant property access. The guest has been asked to mention this email to you.`;
+}
 function conciergeFailedSms({ guestName, unitLabel, error }) {
   const reason = error && error.message ? error.message.slice(0, 80) : 'unknown error';
   return `❌ Front-desk email FAILED for ${guestName} / ${unitLabel} (${reason}). Please call the front desk to authorize this guest's access.`;
@@ -65,9 +74,16 @@ function conciergeFailedSms({ guestName, unitLabel, error }) {
 //   escalate(err)      — async, SMS the host on failure (always)
 //   notifyAll          — trial gate (env CONCIERGE_NOTIFY_ALL !== 'false'); when
 //                        false, success is silent (failure-only escalation)
-async function resolveConciergeReply({ guestName, unitLabel, sendEmail, escalate, notifySuccess, notifyAll = true }) {
+async function resolveConciergeReply({ guestName, unitLabel, sendEmail, escalate, notifySuccess, notifyConcierge, notifyAll = true }) {
   try {
     await sendEmail();
+    // Front-desk SMS — fires on EVERY successful email (both regex AND AI paths, since both
+    // route through here). NOT gated by notifyAll. Best-effort: a failure here is logged
+    // loudly but never changes the guest reply or the host SMS.
+    if (typeof notifyConcierge === 'function') {
+      try { await notifyConcierge(); }
+      catch (e) { console.error(`[concierge] ❗ concierge SMS FAILED (not delivered): ${e && e.message}`); }
+    }
     if (notifyAll && typeof notifySuccess === 'function') {
       // best-effort, but NEVER silent — a swallowed host-SMS failure is how an
       // out-of-credits alert went unnoticed. Log loudly at error level.
@@ -92,4 +108,5 @@ module.exports = {
   resolveConciergeReply,
   conciergeSentSms,
   conciergeFailedSms,
+  conciergeSms,
 };
