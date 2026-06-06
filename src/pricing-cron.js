@@ -2,9 +2,13 @@
 // node-cron in server.js fires this on a timezone-aware schedule. The actual engine run is
 // spawned as a CHILD PROCESS so its process.exit can never take the web server down.
 //
-// Scope (deliberate): 23-N ONLY, --confirm --batch 30 (read-back verified), and NO
-// --override-sanity — a sanity trip must HALT + alert, never auto-push. Snapshots/audit/
-// dead-man land in PRICING_DATA_DIR (mounted Railway volume) so they survive redeploys.
+// Scope: ALL 7 units, each pushed INDEPENDENTLY (its own runner invocation → own snapshot,
+// sanity check, read-back, lock). One unit's sanity-halt / 422 / read-back-mismatch aborts
+// ONLY that unit (the runner self-alerts) and never blocks or corrupts the others. Units run
+// SEQUENTIALLY because the runner holds a lockfile (parallel spawns would collide).
+// Per-unit args: --confirm --batch 30 (read-back verified), and NO --override-sanity —
+// a sanity trip must HALT + alert, never auto-push. Snapshots/audit/dead-man land in
+// PRICING_DATA_DIR (mounted Railway volume) so they survive redeploys.
 'use strict';
 const path = require('path');
 const { execFile } = require('child_process');
@@ -14,8 +18,10 @@ const { buildAlert } = require('./pricing-resilience');
 const ROOT = path.join(__dirname, '..');
 const RUNNER = path.join(ROOT, 'scripts', 'pricing-engine-run.js');
 
-// 23-N only. NOTE: intentionally no '--override-sanity'.
-const PRICING_23N_ARGS = ['--unit', '23-N', '--confirm', '--batch', '30'];
+// All 7 units, pushed one-at-a-time (independent runs). Order is deterministic.
+const PRICING_UNITS = ['4-L', '24-L', '18-A', '21-D', '21-I', '23-N', '7-B'];
+// Per-unit args. NOTE: intentionally no '--override-sanity'.
+const unitArgs = (unit) => ['--unit', unit, '--confirm', '--batch', '30'];
 const PRICING_CRON_SCHEDULE = '0 9 * * *';        // 9:00 AM, in PRICING_CRON_TZ
 const PRICING_CRON_TZ = 'America/New_York';        // DST-correct via node-cron timezone option
 
@@ -25,20 +31,34 @@ const PRICING_CRON_TZ = 'America/New_York';        // DST-correct via node-cron 
 const PRICING_HEALTHCHECK_ARGS = ['--healthcheck'];
 const PRICING_HEALTHCHECK_SCHEDULE = '30 9 * * *'; // 9:30 AM, in PRICING_CRON_TZ (after the 09:00 run)
 
-function runPricing23N(spawn = execFile, log = console) {
-  log.log('[pricing] Cron fired — 9:00 AM Eastern (23-N)');
-  return spawn('node', [RUNNER, ...PRICING_23N_ARGS], { cwd: ROOT, env: process.env }, (err, stdout, stderr) => {
-    if (stdout) log.log('[pricing]\n' + String(stdout).trim());
-    if (stderr) log.error('[pricing:err] ' + String(stderr).trim());
-    if (err) {
-      log.error('[pricing] run failed: ' + err.message);
-      // The runner SMS-alerts its own failure modes (incl. a top-level crash). Only alert here
-      // for a SPAWN failure (it never started → couldn't self-alert): non-numeric exit code.
-      if (typeof err.code !== 'number') {
-        Promise.resolve(buildAlertSender(process.env)(buildAlert('PRICING_CRON_SPAWN_FAILED', err.message))).catch(() => {});
+// Push ONE unit (its own runner invocation). Resolves when the child exits — ALWAYS resolves
+// (never rejects) so one unit's failure can't stop the loop or corrupt the others. The runner
+// owns its own failure alerts (sanity-halt / 422 / read-back mismatch → SMS); we only add an
+// alert here for a SPAWN failure (it never started → couldn't self-alert): non-numeric code.
+function runPricingUnit(unit, spawn = execFile, log = console) {
+  return new Promise((resolve) => {
+    spawn('node', [RUNNER, ...unitArgs(unit)], { cwd: ROOT, env: process.env }, (err, stdout, stderr) => {
+      if (stdout) log.log(`[pricing:${unit}]\n` + String(stdout).trim());
+      if (stderr) log.error(`[pricing:${unit}:err] ` + String(stderr).trim());
+      if (err) {
+        log.error(`[pricing:${unit}] run failed: ` + err.message);
+        if (typeof err.code !== 'number') {
+          Promise.resolve(buildAlertSender(process.env)(buildAlert('PRICING_CRON_SPAWN_FAILED', `${unit}: ${err.message}`))).catch(() => {});
+        }
       }
-    }
+      resolve(); // independence: continue to the next unit regardless of this one's outcome
+    });
   });
+}
+
+// Run all 7 units SEQUENTIALLY (the runner holds a lockfile — no parallel). Each is an
+// independent push; a halt/alert on one does not affect the rest.
+async function runPricingAllUnits(spawn = execFile, log = console) {
+  log.log(`[pricing] Cron fired — 9:00 AM Eastern (all ${PRICING_UNITS.length} units, independent pushes)`);
+  for (const unit of PRICING_UNITS) {
+    await runPricingUnit(unit, spawn, log);
+  }
+  log.log('[pricing] Cron run complete — all units attempted');
 }
 
 // Fires the dead-man check (the runner alerts if stale). Runs as its own scheduled job.
@@ -52,6 +72,6 @@ function runPricingHealthcheck(spawn = execFile, log = console) {
 }
 
 module.exports = {
-  PRICING_23N_ARGS, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricing23N, RUNNER,
+  PRICING_UNITS, unitArgs, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingUnit, runPricingAllUnits, RUNNER,
   PRICING_HEALTHCHECK_ARGS, PRICING_HEALTHCHECK_SCHEDULE, runPricingHealthcheck,
 };

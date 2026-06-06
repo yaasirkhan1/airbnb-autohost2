@@ -5,7 +5,7 @@ const fs           = require('fs');
 const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
 const cron         = require('node-cron');
-const { runPricing23N, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingHealthcheck, PRICING_HEALTHCHECK_SCHEDULE } = require('./pricing-cron');
+const { runPricingAllUnits, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingHealthcheck, PRICING_HEALTHCHECK_SCHEDULE } = require('./pricing-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { savePending, loadPending, partitionPending } = require('./pending-store');
@@ -2840,8 +2840,8 @@ app.listen(PORT, () => {
   if (process.env.PRICING_CRON === 'off') {
     console.log('[pricing] Cron DISABLED via PRICING_CRON=off');
   } else {
-    cron.schedule(PRICING_CRON_SCHEDULE, () => runPricing23N(), { timezone: PRICING_CRON_TZ });
-    console.log('[pricing] Cron scheduled — 9:00 AM Eastern daily (23-N only)');
+    cron.schedule(PRICING_CRON_SCHEDULE, () => runPricingAllUnits(), { timezone: PRICING_CRON_TZ });
+    console.log('[pricing] Cron scheduled — 9:00 AM Eastern daily (all 7 units, independent pushes)');
     // Dead-man's switch: 30 min after the run, verify a healthy run is on record (alerts via SMS if not)
     cron.schedule(PRICING_HEALTHCHECK_SCHEDULE, () => runPricingHealthcheck(), { timezone: PRICING_CRON_TZ });
     console.log('[pricing] Dead-man healthcheck scheduled — 9:30 AM Eastern daily');
