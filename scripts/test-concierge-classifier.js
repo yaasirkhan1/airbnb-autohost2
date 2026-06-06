@@ -42,18 +42,46 @@ const check = async (n, f) => {
   catch (e) { console.log('✗', n, '\n   ', e.message); fail++; }
 };
 
-// ── Real + innocent cases (the ones the user named) ─────────────────────────
+// ── Real + innocent cases. PART B samples each N× (default 5, env CONCIERGE_SAMPLES)
+// and asserts a tally, so a probabilistic classifier is held to a reliability band
+// rather than one lucky call. ─────────────────────────────────────────────────────
 const FIRE_CASES = [
-  ['Dekarius fragments (joined)', 'Can you send reservation To the front desk Or call'],
-  ['Kedravious question',         'Did you guys send my informations over to concierge desk?'],
-  // Paraphrased variants — prove the AI catches contingencies the regex misses.
-  ['paraphrase: no record, no key', "the lady downstairs says she has nothing under my name and won't give me a key"],
-  ['paraphrase: nothing on file',   'front desk has no booking for me, can you let them know im checked in'],
+  ['Dekarius fragments (joined)',           'Can you send reservation To the front desk Or call'],
+  ['Kedravious question',                   'Did you guys send my informations over to concierge desk?'],
+  // Desk-lacks-my-X paraphrases (no "key" wording — units have coded locks). Several of
+  // these the regex misses by design; the AI must catch them.
+  ["nothing under my name, won't let me up", "I'm at the front desk and they say there's nothing under my name and won't let me up"],
+  ['front desk has no booking for me',       'front desk has no booking for me, can you let them know im checked in'],
+  ["desk doesn't have my reservation",       "the front desk doesn't have my reservation"],
+  ["can't find my booking",                  "they can't find my booking at the desk"],
+  ['no record of me',                        'the concierge has no record of me'],
+  ['not in the system',                      "front desk says I'm not in the system"],
+  ["my registration wasn't sent",            "my registration wasn't sent to the front desk"],
+  ["doesn't have my details/paperwork",      "the desk doesn't have my details or paperwork"],
+  ["can't find my registration",             "they can't find my registration downstairs"],
+  ["spreadsheet wasn't sent",                "the spreadsheet wasn't sent so the desk can't check me in"],
+  ["check-in form wasn't sent",              "the check-in form wasn't sent to the building"],
+  ["doesn't have my info",                   "the front desk doesn't have my info"],
+  ["stuck in lobby / can't get up",          "I'm stuck in the lobby and can't get up to my floor"],
+  ['please call front desk to confirm',      'Please call the front desk to confirm!'],
 ];
 const SILENT_CASES = [
-  ['where is the front desk?',        'where is the front desk?'],
-  ['is the front desk open 24h?',     'is the front desk open 24h?'],
-  ['can you send wifi info?',         'can you send wifi info?'],
+  ['where is the front desk?',               'where is the front desk?'],
+  ['is the front desk open 24h?',            'is the front desk open 24h?'],
+  ['can you send wifi info?',                'can you send wifi info?'],
+  // 2026-06-06 false positive: a bare guest-name list / pre-arrival update is not an
+  // access problem and MUST stay silent.
+  ['guest-name list (Anne Cork, 6/6 false positive)', 'Here are the names of the guests staying: Anne Cork, Shannan Harris, Rachel Raber'],
+  ['pre-arrival info (arrival time + party size)',     "We'll be arriving around 6pm, there will be 3 of us"],
+  // Coded door locks → "key"/"fob"/door-code is building-access / amenity, NOT a check-in failure.
+  ['key fob / building access request',      'Hey can I get a key fob for the gym and elevator access?'],
+  ['door code question',                     "What's the door code for the unit?"],
+  // Guardrails: trigger-ish words (reservation/booking/registration/form) but NOT the desk
+  // lacking the guest's info — the guest wants their OWN info, or a normal form.
+  ['send ME my reservation details',         'Can you send me my reservation details?'],
+  ["my booking confirmation number",         "What's my booking confirmation number?"],
+  ["here's my registration info",            "Here's my registration info"],
+  ['can I get the parking form',             'Can I get the parking form?'],
 ];
 
 (async () => {
@@ -183,10 +211,17 @@ const SILENT_CASES = [
     assert.strictEqual(rec.fired, true);
   });
 
-  console.log('\n── PART B: real Claude decisions on every named case ──\n');
+  // Deterministic guardrail (always runs, no API): production must not fire via the
+  // REGEX on any must-NOT-fire case, so the silent guarantee holds even with AI off.
+  await check('regex stays silent on every must-NOT-fire case (deterministic)', () => {
+    for (const [label, text] of SILENT_CASES)
+      assert.ok(!regexHitFor(text), `regex must NOT fire on ${label}: "${text}"`);
+  });
+
+  console.log('\n── PART B: real Claude — sampled tally (N×/case, must-FIRE band vs must-SILENT band) ──\n');
 
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.log('  (skipped — ANTHROPIC_API_KEY not set; run with the key to see live decisions)\n');
+    console.log('  (skipped — ANTHROPIC_API_KEY not set; run with the key to see the sampled tally)\n');
   } else {
     // Real raw-fetch Claude call, mirroring server.js callClaude().
     const realCallClaude = async (system, userMsg, maxTokens = 5) => {
@@ -208,25 +243,32 @@ const SILENT_CASES = [
       const d = await r.json();
       return d.content?.[0]?.text || '';
     };
-    // Force the AI path (regexHit:false) so we observe the classifier itself,
-    // not the regex fast-path — proves the AI alone gets these right.
+    // Force the AI path (regexHit:false) so we observe the classifier itself, not the
+    // regex fast-path — proves the AI alone gets these right. Sampled N× per case and
+    // held to a reliability band (probabilistic model → tally, not a single call).
     const decide = (text) =>
       classifyConcierge(text, { regexHit: false, callClaude: realCallClaude, timeoutMs: 8000 });
+    const N = parseInt(process.env.CONCIERGE_SAMPLES, 10) || 5;
+    const FIRE_MIN = Math.ceil(0.8 * N);    // must-fire ≥ 80% of samples
+    const SILENT_MAX = Math.floor(0.2 * N); // must-silent ≤ 20% of samples
+    const sample = async (text) => {
+      const res = await Promise.all(Array.from({ length: N }, () => decide(text).catch(() => 'E')));
+      return res.filter(r => r === true).length;
+    };
+    console.log(`  N=${N}/case | AI path forced | must-FIRE ≥${FIRE_MIN}/${N}, must-SILENT ≤${SILENT_MAX}/${N}\n`);
 
     for (const [label, text] of FIRE_CASES) {
-      await check(`FIRE: ${label}`, async () => {
-        const regexAlone = regexHitFor(text);
-        const aiFires = await decide(text);
-        console.log(`     regex-alone=${regexAlone ? 'HIT ' : 'miss'}  AI=${aiFires ? 'FIRE  ' : 'SILENT'}  ← "${text}"`);
-        assert.ok(aiFires, 'classifier should FIRE on this real case');
+      await check(`FIRE ≥${FIRE_MIN}/${N}: ${label}`, async () => {
+        const fires = await sample(text);
+        console.log(`     ${fires}/${N} fire    ← "${text.slice(0, 58)}"`);
+        assert.ok(fires >= FIRE_MIN, `expected ≥${FIRE_MIN}/${N}, got ${fires}/${N}`);
       });
     }
     for (const [label, text] of SILENT_CASES) {
-      await check(`SILENT: ${label}`, async () => {
-        const regexAlone = regexHitFor(text);
-        const aiFires = await decide(text);
-        console.log(`     regex-alone=${regexAlone ? 'HIT ' : 'miss'}  AI=${aiFires ? 'FIRE  ' : 'SILENT'}  ← "${text}"`);
-        assert.ok(!aiFires, 'classifier should stay SILENT on this innocent case');
+      await check(`SILENT ≤${SILENT_MAX}/${N}: ${label}`, async () => {
+        const fires = await sample(text);
+        console.log(`     ${fires}/${N} fire    ← "${text.slice(0, 58)}"`);
+        assert.ok(fires <= SILENT_MAX, `expected ≤${SILENT_MAX}/${N}, got ${fires}/${N}`);
       });
     }
   }

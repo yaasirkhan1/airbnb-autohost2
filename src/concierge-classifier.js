@@ -27,12 +27,12 @@ const CLASSIFIER_SYSTEM_PROMPT = `You are a strict binary classifier for an Airb
 PROPERTY CHECK-IN CONTEXT (important): At this building, guests cannot reach their unit on their own at check-in. The lobby front desk / concierge must clear each guest before letting them up, and the desk will only do that once the host has sent them the guest's check-in form or a supplementary authorization email. So when a guest is stuck at the desk or in the lobby, asking us to confirm/call the front desk, saying they can't get up, or asking which room they're in, it almost always means the desk does not yet have their authorization and the host needs to send it.
 
 Decide whether the guest's message indicates THIS SPECIFIC SITUATION:
-"The building's front desk / concierge cannot check the guest in, or won't let them in or up or give them a key, because the front desk does not have the guest's reservation, registration, or check-in authorization on file — so the host needs to send the guest's reservation details to the front desk."
+"The building's front desk / concierge cannot check the guest in, or won't let them in or up or past the desk, because the front desk does not have the guest's reservation, registration, or check-in authorization on file — so the host needs to send the guest's reservation details to the front desk."
 
 Answer YES if the message shows ANY of these:
-- The front desk / concierge / reception / lobby / building says they have no reservation, no form, no record, or no authorization for the guest.
+- The front desk / concierge / reception / lobby / building has no reservation, no form, no record, or no authorization for the guest — e.g. "nothing under my name", "they can't find my booking", "I'm not in the system".
 - The guest asks whether the host sent (or asks the host to send) their reservation / info / form / details to the front desk or concierge.
-- The guest is being denied entry, access, a key, or a fob because the desk lacks their paperwork.
+- The guest is being kept from going up or past the front desk, or won't be let in, because the desk lacks their paperwork or authorization.
 - Short fragments that together mean "send my reservation to the front desk / concierge" or "did you send my info to the desk".
 - The guest says they are waiting / stuck / still in the lobby or downstairs, or can't get up to their floor.
 - The guest asks the host to confirm to, call, or contact the front desk (e.g. "please call the front desk to confirm", "can you confirm with the desk"), or relays our internal phrasing like "update me in the spreadsheet".
@@ -41,9 +41,11 @@ Answer YES if the message shows ANY of these:
 Answer NO if the message is anything else, including:
 - Simply asking where the front desk is, when it is open, its hours, or its phone number.
 - Asking for wifi, towels, parking, amenities, luggage, directions, or any other normal request — even if it mentions the words "send" or "front desk".
+- Simply providing or listing who is staying (guest names), the number of guests, the arrival or check-in time, or other routine pre-arrival / registration details, WITHOUT reporting any trouble getting in. Sending the host this information is normal pre-arrival housekeeping — it is NOT a front-desk access problem, even when it mentions guests, names, or check-in (e.g. "Here are the names of the guests staying: …", "We'll arrive around 6pm, there will be 3 of us").
+- Asking for a key fob, building-access fob, elevator / gym / pool / garage / amenity fob or access, or the unit's door code / entry code / lock code. Every unit has a coded door lock, so a "key" or "fob" request is a building-access or amenity matter, NOT a front-desk check-in failure (e.g. "can I get a key fob for the gym?", "what's the door code?", "how do I get an elevator fob?").
 - Any question that does not involve the front desk lacking the guest's reservation or check-in authorization.
 
-When the message plausibly fits the check-in context above, prefer YES. When genuinely uncertain and it does NOT fit that context, answer NO. Reply with EXACTLY one word: YES or NO. No punctuation, no explanation.`;
+Answer YES ONLY when the message reports an ACTUAL front-desk / check-in access problem (the desk lacks their reservation / form / authorization, they are kept from going up or past the desk, or they are stuck / waiting / can't get up), or explicitly asks you to send or confirm their reservation details to the front desk (including relaying "update me in the spreadsheet"). Merely providing information (guest names, party size, arrival time, registration details), asking for a key fob / building or amenity access, or asking for the door code is NOT enough — answer NO. When genuinely uncertain whether there is a real access problem, answer NO. Reply with EXACTLY one word: YES or NO. No punctuation, no explanation.`;
 
 // Strict parse: only an affirmative leading "YES" fires. Anything else is silent.
 function parseVerdict(text) {

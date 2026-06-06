@@ -1002,7 +1002,7 @@ const CONCIERGE_REGEX = new RegExp(
   "|security\\s+won'?t\\s+let" +
   "|won'?t\\s+buzz\\s+me|they\\s+won'?t\\s+buzz" +
   "|guard\\s+is\\s+asking|asking\\s+for\\s+authorization" +
-  "|can'?t\\s+get\\s+to\\s+my\\s+floor|elevator\\s+requires\\s+a\\s+key" +
+  "|can'?t\\s+get\\s+to\\s+my\\s+floor" +
   // Check-in failure (not followed by "early" or a time to avoid early-checkin collision)
   "|unable\\s+to\\s+check[\\s-]?in" +
   "|cannot\\s+check[\\s-]?in" +
@@ -1029,10 +1029,11 @@ const CONCIERGE_REGEX = new RegExp(
   // / front desk / building. Broadened beyond the literal word "reservation" and
   // works for both commands and status-questions (lookahead-only, grammar-agnostic).
   "|(?=[\\s\\S]*\\b(?:reservation|reservations|info|information|informations|form|details|paperwork|registration|booking)\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|forwarded|over\\s+to|pass(?:ed)?\\s+(?:on|along)))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|building|reception|lobby))" +
-  // NOTE: fob / entry-code / door-code phrasings intentionally do NOT trigger the
-  // front-desk contingency — entry codes are handled via Hospitable's Schlage
-  // integration, not by emailing the concierge. Only form / confirm / send-the-
-  // reservation messages fire it.
+  // NOTE: "key" / fob / entry-code / door-code phrasings intentionally do NOT trigger
+  // the front-desk contingency. Every unit has a coded door lock (Hospitable's Schlage
+  // integration), so a guest saying "key"/"fob" means a building-access fob or amenity
+  // access — NOT a check-in failure. Only form / confirm / send-the-reservation / lobby /
+  // no-record-at-the-desk messages fire it. (Removed "elevator requires a key" 2026-06-06.)
   // ── 2026-06-03: phrasings that slipped through the night of 2026-06-02 (44-min
   // late concierge email). This is a front-desk/concierge high-rise — the desk
   // checks guests in only after we send a form or supplementary email, so plain
