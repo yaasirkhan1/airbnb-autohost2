@@ -17,22 +17,22 @@ ok('WC is no longer a hard-skip — every window night now prices', () => {
   }
 });
 
-ok('non-match glide 180→150 (1BR) / 243→203 (2BR), min 2→1', () => {
+ok('non-match glide 158→132 (1BR) / 213→178 (2BR), min 2→1', () => {
   // Jun 29 is a true non-match night (not a match, not a shoulder).
-  assert.strictEqual(at('23-N', '2026-06-29', 7).price, 180);
-  assert.strictEqual(at('23-N', '2026-06-29', 0).price, 150);
-  assert.strictEqual(at('21-I', '2026-06-29', 7).price, 243);
-  assert.strictEqual(at('21-I', '2026-06-29', 0).price, 203);
+  assert.strictEqual(at('23-N', '2026-06-29', 7).price, 158);
+  assert.strictEqual(at('23-N', '2026-06-29', 0).price, 132);
+  assert.strictEqual(at('21-I', '2026-06-29', 7).price, 213);
+  assert.strictEqual(at('21-I', '2026-06-29', 0).price, 178);
   assert.strictEqual(at('23-N', '2026-06-29', 7).minStay, 2);
   assert.strictEqual(at('23-N', '2026-06-29', 6).minStay, 1);
 });
 
-ok('group match (Jun 18) 200→189 / 280→255, min 2→1; higher-wins over baseline', () => {
+ok('group match (Jun 18) 176→166 / 238→224, min 2→1; higher-wins over baseline', () => {
   const r = at('23-N', '2026-06-18', 7);
-  assert.strictEqual(r.price, 200); assert.ok(/group/i.test(r.event), 'match tier wins over baseline');
-  assert.strictEqual(at('23-N', '2026-06-18', 0).price, 189);
-  assert.strictEqual(at('21-I', '2026-06-18', 7).price, 280);
-  assert.strictEqual(at('21-I', '2026-06-18', 0).price, 255);
+  assert.strictEqual(r.price, 176); assert.ok(/group/i.test(r.event), 'match tier wins over baseline');
+  assert.strictEqual(at('23-N', '2026-06-18', 0).price, 166);
+  assert.strictEqual(at('21-I', '2026-06-18', 7).price, 238);
+  assert.strictEqual(at('21-I', '2026-06-18', 0).price, 224);
 });
 
 ok('knockout (Jul 1, Jul 7) 300→250 / 380→338', () => {
@@ -53,7 +53,7 @@ ok('semifinal (Jul 15) 375→350 / 475→420, min 2→1 (WC rule)', () => {
 });
 
 ok('weekend hard floor holds inside WC (non-match Sat never below $99/$127)', () => {
-  // 2026-06-20 is a Saturday, non-match → glide floor $150 (1BR) / $203 (2BR), both >= weekend floor
+  // 2026-06-20 is a Saturday shoulder → glide floor $145 (1BR) / $196 (2BR), both >= weekend floor
   assert.ok(at('23-N', '2026-06-20', 0).price >= 99);
   assert.ok(at('21-I', '2026-06-20', 0).price >= 127);
 });
@@ -63,19 +63,19 @@ ok('booked WC night is frozen (not pushable); unbooked is pushable', () => {
   assert.strictEqual(isPushable(at('23-N', '2026-07-15', 5, false), false), true);
 });
 
-ok('overlap: Jul 6 shoulder ($190) beats both baseline and Ariana Grande; Jul 7 knockout beats all', () => {
-  // Jul 6 is shoulder (pre Jul 7 knockout): $190 > baseline $180 > Ariana $132
-  assert.ok(/shoulder/i.test(at('23-N', '2026-07-06', 7).event), 'Jul 6: shoulder ($190) wins');
-  assert.strictEqual(at('23-N', '2026-07-06', 7).price, 190);
+ok('overlap: Jul 6 shoulder ($167) beats both baseline and Ariana Grande; Jul 7 knockout beats all', () => {
+  // Jul 6 is shoulder (pre Jul 7 knockout): $167 > baseline $158 > Ariana $132
+  assert.ok(/shoulder/i.test(at('23-N', '2026-07-06', 7).event), 'Jul 6: shoulder ($167) wins');
+  assert.strictEqual(at('23-N', '2026-07-06', 7).price, 167);
   assert.ok(/knockout/i.test(at('23-N', '2026-07-07', 7).event), 'Jul 7: knockout ($300) > all');
 });
 
-ok('shoulder glide 190→165 (1BR) / 257→223 (2BR), min 2→1', () => {
+ok('shoulder glide 167→145 (1BR) / 225→196 (2BR), min 2→1', () => {
   // Jun 16 = shoulder (post Jun 15 match). start at lead>=ease, floor at lead 0.
-  assert.strictEqual(at('23-N', '2026-06-16', 7).price, 190);
-  assert.strictEqual(at('23-N', '2026-06-16', 0).price, 165);
-  assert.strictEqual(at('21-I', '2026-06-16', 7).price, 257);
-  assert.strictEqual(at('21-I', '2026-06-16', 0).price, 223);
+  assert.strictEqual(at('23-N', '2026-06-16', 7).price, 167);
+  assert.strictEqual(at('23-N', '2026-06-16', 0).price, 145);
+  assert.strictEqual(at('21-I', '2026-06-16', 7).price, 225);
+  assert.strictEqual(at('21-I', '2026-06-16', 0).price, 196);
   assert.strictEqual(at('23-N', '2026-06-16', 7).minStay, 2);
   assert.strictEqual(at('23-N', '2026-06-16', 6).minStay, 1);
   assert.ok(/shoulder/i.test(at('23-N', '2026-06-16', 7).event), 'tier is shoulder');
@@ -114,10 +114,10 @@ ok('price ladder is monotonic at start (lead 7) and floor (lead 0): nonmatch<sho
   }
 });
 
-ok('non-match in-between nights remain $180→$150 (unchanged by shoulder tier)', () => {
+ok('non-match in-between nights remain $158→$132 (unchanged by shoulder tier)', () => {
   // Jun 29 and Jul 3 are neither match nor shoulder → still baseline.
-  assert.strictEqual(at('23-N', '2026-06-29', 7).price, 180);
-  assert.strictEqual(at('23-N', '2026-06-29', 0).price, 150);
+  assert.strictEqual(at('23-N', '2026-06-29', 7).price, 158);
+  assert.strictEqual(at('23-N', '2026-06-29', 0).price, 132);
   assert.ok(/non-match/i.test(at('23-N', '2026-07-03', 7).event), 'Jul 3 stays non-match baseline');
 });
 
