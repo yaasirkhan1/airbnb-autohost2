@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { computeNight } = require('../src/pricing-engine');
 const { isCalendarUsable, isNightBooked, isPushable, etToday, runSanityCheck } = require('../src/pricing-guards');
+const { isDecayFenced } = require('../src/pricing-decay');
 const R = require('../src/pricing-resilience');
 const config = require('../src/pricing-config.json');
 
@@ -241,7 +242,7 @@ async function doRollback(args) {
   console.log(`PRICING ENGINE RUN — ${start} → ${end} | units: ${unitLabels.join(', ')} | swing>${args.swing}% | ${args.confirm ? (args.batch ? `CONFIRM (batch ${args.batch})` : 'CONFIRM (push)') : 'DRY RUN'}`);
   console.log(`today=${today} | sanity: halt if >${args.sanityChanged}% change or any move >${args.sanityMove}%${args.overrideSanity ? ' (OVERRIDDEN)' : ''}\n`);
 
-  let totalNights = 0, totalSwings = 0, totalBooked = 0, totalSkipped = 0, totalOverlaps = 0, totalClamps = 0;
+  let totalNights = 0, totalSwings = 0, totalBooked = 0, totalSkipped = 0, totalOverlaps = 0, totalClamps = 0, totalFenced = 0;
   const skippedUnits = [];
   const allRows = [];      // for the run-level sanity check
   const pushQueue = [];
@@ -267,6 +268,16 @@ async function doRollback(args) {
       const cur = cd ? cd.price : null;
       const res = computeNight(config, label, date, { todayYmd: today, isBooked: booked });
       const dow = DOW[new Date(date + 'T00:00:00Z').getUTCDay()];
+
+      // DECAY FENCE: a night owned by an active decay campaign is managed by the decay
+      // cron (9am/3pm/7pm), NOT the engine — skip it so the engine never overwrites the
+      // ratchet. Date-scoped + self-lifting: once today passes the campaign window these
+      // dates leave the engine's forward window on their own (no manual un-fence).
+      if (isDecayFenced(label, date)) {
+        console.log(`  ${date} ${dow}  $${cur ?? '?'}  [FENCED — decay-managed, engine skips]`);
+        totalFenced++;
+        continue;
+      }
 
       // SKIP zone and BOOKED nights NEVER enter the push queue (isPushable). A booked
       // night the guest already holds is never repriced — shown but not queued.
@@ -314,7 +325,7 @@ async function doRollback(args) {
   const sanity = runSanityCheck(allRows, { maxChangedPct: args.sanityChanged, maxMovePct: args.sanityMove, minCoveragePct: args.sanityCoverage });
 
   console.log(`\n================ SUMMARY ================`);
-  console.log(`${totalNights} priced | ${totalSwings} swing>${args.swing}% | ${totalBooked} booked (left alone) | ${totalSkipped} WC-skip | ${totalOverlaps} overlap | ${totalClamps} event-clamp | ${skippedUnits.length} unit(s) skipped`);
+  console.log(`${totalNights} priced | ${totalSwings} swing>${args.swing}% | ${totalBooked} booked (left alone) | ${totalSkipped} WC-skip | ${totalFenced} decay-fenced | ${totalOverlaps} overlap | ${totalClamps} event-clamp | ${skippedUnits.length} unit(s) skipped`);
   if (skippedUnits.length) console.log(`skipped units (wrote nothing): ${skippedUnits.join('; ')}`);
   console.log(`sanity: ${sanity.changedPct}% of ${sanity.totalWithCurrent} changed, ${sanity.coveragePct}% coverage, max move ${sanity.maxMovePct}% → ${sanity.halt ? '⛔ HALT' : 'ok'}`);
   if (sanity.halt) sanity.reasons.forEach(r => console.log(`  ✗ ${r}`));

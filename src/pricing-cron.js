@@ -17,6 +17,12 @@ const { buildAlert } = require('./pricing-resilience');
 
 const ROOT = path.join(__dirname, '..');
 const RUNNER = path.join(ROOT, 'scripts', 'pricing-engine-run.js');
+const DECAY_RUNNER = path.join(ROOT, 'scripts', 'decay-run.js');
+
+// Vacancy decay passes — 9:00 AM / 3:00 PM / 7:00 PM in PRICING_CRON_TZ (Eastern). Each
+// pass ratchets the fenced units' nightly price down one step (floored, booked-skip). The
+// runner self-no-ops once its campaign window is past, so these schedules need no teardown.
+const DECAY_CRON_SCHEDULES = ['0 9 * * *', '0 15 * * *', '0 19 * * *'];
 
 // All 7 units, pushed one-at-a-time (independent runs). Order is deterministic.
 const PRICING_UNITS = ['4-L', '24-L', '18-A', '21-D', '21-I', '23-N', '7-B'];
@@ -61,6 +67,27 @@ async function runPricingAllUnits(spawn = execFile, log = console) {
   log.log('[pricing] Cron run complete — all units attempted');
 }
 
+// One vacancy-decay pass (its own runner invocation). Spawned as a child so its exit can
+// never take the web server down. ALWAYS resolves; a spawn failure (couldn't start → can't
+// self-alert) raises one alert. The runner itself is fail-closed and self-no-ops when its
+// campaign window is past.
+function runDecayPass(spawn = execFile, log = console) {
+  return new Promise((resolve) => {
+    log.log('[decay] Pass firing (ratchet step, floored, booked-skip)');
+    spawn('node', [DECAY_RUNNER, '--confirm'], { cwd: ROOT, env: process.env }, (err, stdout, stderr) => {
+      if (stdout) log.log('[decay]\n' + String(stdout).trim());
+      if (stderr) log.error('[decay:err] ' + String(stderr).trim());
+      if (err) {
+        log.error('[decay] run failed: ' + err.message);
+        if (typeof err.code !== 'number') {
+          Promise.resolve(buildAlertSender(process.env)(buildAlert('DECAY_CRON_SPAWN_FAILED', err.message))).catch(() => {});
+        }
+      }
+      resolve();
+    });
+  });
+}
+
 // Fires the dead-man check (the runner alerts if stale). Runs as its own scheduled job.
 function runPricingHealthcheck(spawn = execFile, log = console) {
   log.log('[pricing] Dead-man healthcheck firing');
@@ -74,4 +101,5 @@ function runPricingHealthcheck(spawn = execFile, log = console) {
 module.exports = {
   PRICING_UNITS, unitArgs, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingUnit, runPricingAllUnits, RUNNER,
   PRICING_HEALTHCHECK_ARGS, PRICING_HEALTHCHECK_SCHEDULE, runPricingHealthcheck,
+  DECAY_RUNNER, DECAY_CRON_SCHEDULES, runDecayPass,
 };

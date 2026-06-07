@@ -5,7 +5,7 @@ const fs           = require('fs');
 const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
 const cron         = require('node-cron');
-const { runPricingAllUnits, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingHealthcheck, PRICING_HEALTHCHECK_SCHEDULE } = require('./pricing-cron');
+const { runPricingAllUnits, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingHealthcheck, PRICING_HEALTHCHECK_SCHEDULE, runDecayPass, DECAY_CRON_SCHEDULES } = require('./pricing-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { savePending, loadPending, partitionPending } = require('./pending-store');
@@ -2846,6 +2846,13 @@ app.listen(PORT, () => {
     // Dead-man's switch: 30 min after the run, verify a healthy run is on record (alerts via SMS if not)
     cron.schedule(PRICING_HEALTHCHECK_SCHEDULE, () => runPricingHealthcheck(), { timezone: PRICING_CRON_TZ });
     console.log('[pricing] Dead-man healthcheck scheduled — 9:30 AM Eastern daily');
+    // Vacancy decay passes — 9 AM / 3 PM / 7 PM Eastern. Ratchets fenced units' nightly
+    // price down one step (floored, booked-skip). The runner self-no-ops once its campaign
+    // window is past, so these schedules are date-scoped and self-lifting (no teardown).
+    for (const sched of DECAY_CRON_SCHEDULES) {
+      cron.schedule(sched, () => runDecayPass(), { timezone: PRICING_CRON_TZ });
+    }
+    console.log('[decay] Vacancy decay scheduled — 9:00 AM / 3:00 PM / 7:00 PM Eastern (date-scoped, self-lifting)');
   }
 });
 }
