@@ -21,7 +21,7 @@ const ok = async (n, f) => { await f(); console.log('✓', n); pass++; };
     assert.ok(/this is Yasser Khan\.[\s\S]*formally requesting/.test(body), 'formal note from Yasser Khan');
     assert.ok(body.includes('Name of guest: Eshia Brown'), 'guest name labeled + populated');
     assert.ok(body.includes('Unit Number: 7-B'), 'unit labeled + populated');
-    assert.ok(body.includes('Arrival & Departure Dates: 2026-06-05 – 2026-06-07'), 'dates labeled + populated');
+    assert.ok(body.includes('Arrival & Departure Dates: Friday, June 5, 2026 – Sunday, June 7, 2026'), 'dates labeled + readable');
     assert.ok(body.includes('Number of guests: 3'), 'guest count labeled + populated');
     assert.ok(body.includes('The person authorizing the stay: Yasser Khan'), 'authorizer fixed to Yasser Khan');
   });

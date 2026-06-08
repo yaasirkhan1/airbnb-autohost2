@@ -1111,7 +1111,7 @@ async function sendConciergeEmail({ guestName, propertyId, resourceId, resourceT
     : (g ?? reservation?.number_of_guests ?? null);
   const code = reservation?.code || reservation?.confirmation_code || null;
 
-  const { subject, body } = buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, arrivalTime, numGuests, code });
+  const { subject, body, html } = buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, arrivalTime, numGuests, code });
 
   const to = process.env.CONCIERGE_EMAIL_TO || '300ptconcierge@gmail.com';
   console.log(`[concierge] Sending email — unit=${unitLabel} guest="${guestName}" to=${to}`);
@@ -1133,7 +1133,7 @@ async function sendConciergeEmail({ guestName, propertyId, resourceId, resourceT
       // Resend HTTP API — works on Railway (no outbound SMTP port required)
       const resend = new Resend(resendKey);
       const from   = process.env.RESEND_FROM || `Peachtree Tower Rentals <${gmailUser || 'cal@peachtreestayatl.com'}>`;
-      const result = await resend.emails.send({ from, to, subject, text: body });
+      const result = await resend.emails.send({ from, to, subject, text: body, html });
       if (result.error) throw new Error(`Resend error: ${JSON.stringify(result.error)}`);
       console.log(`[concierge] ✓ Email sent via Resend to ${to} — id=${result.data?.id}`);
       return;
@@ -1149,7 +1149,7 @@ async function sendConciergeEmail({ guestName, propertyId, resourceId, resourceT
       greetingTimeout:   10000,
       socketTimeout:     15000,
     });
-    await transporter.sendMail({ from: gmailUser, to, subject, text: body });
+    await transporter.sendMail({ from: gmailUser, to, subject, text: body, html });
     console.log(`[concierge] ✓ Email sent via SMTP to ${to} for ${guestName} in ${unitLabel}`);
   } catch (e) {
     // Leaf function: surface the failure to the caller. The caller owns escalation
