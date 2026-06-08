@@ -20,6 +20,7 @@ const path = require('path');
 const { computeNight } = require('../src/pricing-engine');
 const { isCalendarUsable, isNightBooked, isPushable, etToday, runSanityCheck } = require('../src/pricing-guards');
 const { isDecayFenced } = require('../src/pricing-decay');
+const { wcFenced } = require('../src/wc-fill');
 const R = require('../src/pricing-resilience');
 const config = require('../src/pricing-config.json');
 
@@ -275,6 +276,13 @@ async function doRollback(args) {
       // dates leave the engine's forward window on their own (no manual un-fence).
       if (isDecayFenced(label, date)) {
         console.log(`  ${date} ${dow}  $${cur ?? '?'}  [FENCED — decay-managed, engine skips]`);
+        totalFenced++;
+        continue;
+      }
+      // WC FILL fence: Jun 14–26 is owned by the World Cup fill campaign (seeds + decays on
+      // 9/15/19 ET). Engine skips so it never reverts the fill prices. Self-lifting after Jun 26.
+      if (wcFenced(date)) {
+        console.log(`  ${date} ${dow}  $${cur ?? '?'}  [FENCED — WC fill campaign, engine skips]`);
         totalFenced++;
         continue;
       }

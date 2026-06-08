@@ -18,6 +18,7 @@ const { buildAlert } = require('./pricing-resilience');
 const ROOT = path.join(__dirname, '..');
 const RUNNER = path.join(ROOT, 'scripts', 'pricing-engine-run.js');
 const DECAY_RUNNER = path.join(ROOT, 'scripts', 'decay-run.js');
+const WC_FILL_RUNNER = path.join(ROOT, 'scripts', 'wc-fill-run.js');
 
 // Vacancy decay passes — 9:00 AM / 3:00 PM / 7:00 PM in PRICING_CRON_TZ (Eastern). Each
 // pass ratchets the fenced units' nightly price down one step (floored, booked-skip). The
@@ -88,6 +89,26 @@ function runDecayPass(spawn = execFile, log = console) {
   });
 }
 
+// One World Cup FILL decay pass (Jun 14–26). Spawned as a child like the decay pass — its exit
+// can't take the web server down; always resolves; self-no-ops once the window passes or the
+// kill switch (WC_FILL.active / WC_FILL_OFF) is off. Shares the 9/15/19 ET decay schedule.
+function runWcFillPass(spawn = execFile, log = console) {
+  return new Promise((resolve) => {
+    log.log('[wc-fill] Pass firing (seed already applied; ratchet to floor, booked-skip)');
+    spawn('node', [WC_FILL_RUNNER, '--confirm'], { cwd: ROOT, env: process.env }, (err, stdout, stderr) => {
+      if (stdout) log.log('[wc-fill]\n' + String(stdout).trim());
+      if (stderr) log.error('[wc-fill:err] ' + String(stderr).trim());
+      if (err) {
+        log.error('[wc-fill] run failed: ' + err.message);
+        if (typeof err.code !== 'number') {
+          Promise.resolve(buildAlertSender(process.env)(buildAlert('WC_FILL_CRON_SPAWN_FAILED', err.message))).catch(() => {});
+        }
+      }
+      resolve();
+    });
+  });
+}
+
 // Fires the dead-man check (the runner alerts if stale). Runs as its own scheduled job.
 function runPricingHealthcheck(spawn = execFile, log = console) {
   log.log('[pricing] Dead-man healthcheck firing');
@@ -102,4 +123,5 @@ module.exports = {
   PRICING_UNITS, unitArgs, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingUnit, runPricingAllUnits, RUNNER,
   PRICING_HEALTHCHECK_ARGS, PRICING_HEALTHCHECK_SCHEDULE, runPricingHealthcheck,
   DECAY_RUNNER, DECAY_CRON_SCHEDULES, runDecayPass,
+  WC_FILL_RUNNER, runWcFillPass,
 };

@@ -5,7 +5,7 @@ const fs           = require('fs');
 const nodemailer   = require('nodemailer');
 const { Resend }   = require('resend');
 const cron         = require('node-cron');
-const { runPricingAllUnits, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingHealthcheck, PRICING_HEALTHCHECK_SCHEDULE, runDecayPass, DECAY_CRON_SCHEDULES } = require('./pricing-cron');
+const { runPricingAllUnits, PRICING_CRON_SCHEDULE, PRICING_CRON_TZ, runPricingHealthcheck, PRICING_HEALTHCHECK_SCHEDULE, runDecayPass, DECAY_CRON_SCHEDULES, runWcFillPass } = require('./pricing-cron');
 const vault        = require('./vault');
 const { isWithinGrace, loadSeen, saveSeen, tsMs } = require('./seen-store');
 const { savePending, loadPending, partitionPending } = require('./pending-store');
@@ -2853,6 +2853,13 @@ app.listen(PORT, () => {
       cron.schedule(sched, () => runDecayPass(), { timezone: PRICING_CRON_TZ });
     }
     console.log('[decay] Vacancy decay scheduled — 9:00 AM / 3:00 PM / 7:00 PM Eastern (date-scoped, self-lifting)');
+    // World Cup FILL decay — Jun 14–26, same 9/15/19 ET cadence. Ratchets the fill-seeded
+    // nights toward their per-date floors (booked-skip); engine fences these dates so it never
+    // reverts them. Self-lifting after Jun 26; kill switch via WC_FILL.active / WC_FILL_OFF.
+    for (const sched of DECAY_CRON_SCHEDULES) {
+      cron.schedule(sched, () => runWcFillPass(), { timezone: PRICING_CRON_TZ });
+    }
+    console.log('[wc-fill] World Cup fill decay scheduled — 9:00 AM / 3:00 PM / 7:00 PM Eastern (Jun 14–26, self-lifting)');
   }
 });
 }
