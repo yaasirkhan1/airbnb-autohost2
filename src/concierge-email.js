@@ -3,26 +3,23 @@
 // unit-testable without sending. server.js pulls the values off the real
 // reservation and calls this.
 
-function buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, code }) {
-  const conf = code || 'N/A';
-  const subject = `[Office of Mr. Yaasir Khan] Check-In Authorization — ${unitLabel} | ${checkIn} - ${checkOut}`;
-  const body = `Hello,
+// Authorizer is FIXED — always Yasser Khan, regardless of any value passed in.
+const CONCIERGE_AUTHORIZER = 'Yasser Khan';
 
-This is an automated message from the office of Mr. Yaasir Khan (Peachtree Tower Rentals). This is a legitimate, authorized check-in request for one of our guests — not spam or a phishing attempt.
+function buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, arrivalTime, numGuests, code }) {
+  const arrival = arrivalTime || '4:00 PM';                              // default to standard check-in
+  const guests  = (numGuests != null && numGuests !== '') ? String(numGuests) : 'N/A';
+  const conf    = code || 'N/A';
+  const subject = `Check-In Authorization — ${unitLabel} | ${checkIn} – ${checkOut}`;
+  const body = `Hello, this is ${CONCIERGE_AUTHORIZER}. I am formally requesting that the following guest be granted access to the building for their stay. This is a legitimate, authorized check-in request — not spam or a phishing attempt. Their check-in details are below.
 
-Please allow ${guestName} to access unit ${unitLabel}.
-
-Guest Name: ${guestName}
-Unit: ${unitLabel}
+Name of guest: ${guestName}
+Arrival & Departure Dates: ${checkIn} – ${checkOut}
+Unit Number: ${unitLabel}
 Confirmation Code: ${conf}
-Check-In: ${checkIn} at 4:00 PM
-Check-Out: ${checkOut}
-
-Please grant this guest full access to the unit for the duration of their stay.
-
-Thank you,
-The Office of Mr. Yaasir Khan
-Peachtree Tower Rentals`;
+Arrival Time: ${arrival}
+Number of guests: ${guests}
+The person authorizing the stay: ${CONCIERGE_AUTHORIZER}`;
   return { subject, body };
 }
 
@@ -55,10 +52,10 @@ function conciergeSentSms({ guestName, unitLabel }) {
 }
 
 // Front-desk/concierge SMS — sent to CONCIERGE_PHONE after the email succeeds, giving the
-// desk a heads-up to check their inbox. Mirrors the email's "office of Mr. Yaasir Khan"
+// desk a heads-up to check their inbox. Mirrors the email's "office of Mr. Yasser Khan"
 // legitimacy framing (the desk previously suspected the email was a scam).
 function conciergeSms({ guestName, unitLabel, conciergeEmail }) {
-  return `This is an automated message from the office of Mr. Yaasir Khan. ${guestName} (Unit ${unitLabel}) is checking in and Mr. Khan is currently unavailable. A supplementary form with their reservation details was just emailed to ${conciergeEmail} — please check your inbox to grant property access. The guest has been asked to mention this email to you.`;
+  return `This is an automated message from the office of Mr. Yasser Khan. ${guestName} (Unit ${unitLabel}) is checking in and Mr. Khan is currently unavailable. A supplementary form with their reservation details was just emailed to ${conciergeEmail} — please check your inbox to grant property access. The guest has been asked to mention this email to you.`;
 }
 function conciergeFailedSms({ guestName, unitLabel, error }) {
   const reason = error && error.message ? error.message.slice(0, 80) : 'unknown error';

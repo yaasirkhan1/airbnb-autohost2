@@ -1,7 +1,7 @@
 // Tests for the concierge follow-up actions (no detection logic touched):
 //   (1) concierge SMS fires to CONCIERGE_PHONE on email success (both paths route through
 //       resolveConciergeReply via runConciergeContingency), NOT on failure;
-//   (2) the front-desk email carries the "office of Mr. Yaasir Khan" legitimacy identifier;
+//   (2) the front-desk email carries the "office of Mr. Yasser Khan" legitimacy identifier;
 //   (3) the guest reply returned on success is the front-desk confirmation (what the AI
 //       path now schedules, same as the regex path).
 // Run: node scripts/test-concierge-followups.js
@@ -15,21 +15,21 @@ let pass = 0;
 const ok = async (n, f) => { await f(); console.log('✓', n); pass++; };
 
 (async () => {
-  // ── (2) EMAIL LEGITIMACY ──
-  await ok('email states it is an automated message from the office of Mr. Yaasir Khan', () => {
-    const { subject, body } = buildConciergeEmail({ guestName: 'Eshia Brown', unitLabel: '7-B', checkIn: '2026-06-05', checkOut: '2026-06-07', code: 'ABC123' });
-    assert.ok(/office of Mr\.?\s*Yaasir Khan/i.test(body), 'body must carry the office-of-Mr.-Yaasir-Khan identifier');
-    assert.ok(/not spam/i.test(body), 'body should explicitly disclaim spam (front desk thought it was a scam)');
-    assert.ok(/Yaasir Khan/i.test(subject), 'subject should also identify the office');
-    for (const frag of ['Eshia Brown', '7-B', 'ABC123', '2026-06-05', '2026-06-07']) {
-      assert.ok(body.includes(frag), `details intact: "${frag}" present`);
-    }
+  // ── (2) EMAIL FORMAT — formal note from Yasser Khan + labeled reservation details ──
+  await ok('email opens with the Yasser Khan formal note and lists the populated guest details', () => {
+    const { body } = buildConciergeEmail({ guestName: 'Eshia Brown', unitLabel: '7-B', checkIn: '2026-06-05', checkOut: '2026-06-07', arrivalTime: '4:00 PM', numGuests: 3 });
+    assert.ok(/this is Yasser Khan\.[\s\S]*formally requesting/.test(body), 'formal note from Yasser Khan');
+    assert.ok(body.includes('Name of guest: Eshia Brown'), 'guest name labeled + populated');
+    assert.ok(body.includes('Unit Number: 7-B'), 'unit labeled + populated');
+    assert.ok(body.includes('Arrival & Departure Dates: 2026-06-05 – 2026-06-07'), 'dates labeled + populated');
+    assert.ok(body.includes('Number of guests: 3'), 'guest count labeled + populated');
+    assert.ok(body.includes('The person authorizing the stay: Yasser Khan'), 'authorizer fixed to Yasser Khan');
   });
 
   // ── (1) CONCIERGE SMS CONTENT ──
   await ok('conciergeSms carries identifier, guest, unit, concierge email, and mention-request', () => {
     const sms = conciergeSms({ guestName: 'Eshia Brown', unitLabel: '7-B', conciergeEmail: '300ptconcierge@gmail.com' });
-    assert.ok(/office of Mr\.?\s*Yaasir Khan/i.test(sms));
+    assert.ok(/office of Mr\.?\s*Yasser Khan/i.test(sms));
     assert.ok(/Mr\.?\s*Khan is currently unavailable/i.test(sms));
     assert.ok(sms.includes('Eshia Brown') && sms.includes('7-B'));
     assert.ok(sms.includes('300ptconcierge@gmail.com'), 'names the concierge inbox to check');
@@ -101,7 +101,7 @@ const ok = async (n, f) => { await f(); console.log('✓', n); pass++; };
       assert.strictEqual(captured.url, 'https://api.openphone.com/v1/messages');
       assert.deepStrictEqual(captured.body.to, ['+14045551234'], 'must send to CONCIERGE_PHONE');
       assert.strictEqual(captured.auth, 'test-key');
-      assert.ok(/office of Mr\.?\s*Yaasir Khan/i.test(captured.body.content), 'concierge SMS body sent');
+      assert.ok(/office of Mr\.?\s*Yasser Khan/i.test(captured.body.content), 'concierge SMS body sent');
     } finally {
       global.fetch = origFetch;
       process.env.QUO_API_KEY = saved.k; process.env.QUO_FROM_NUMBER = saved.f; process.env.CONCIERGE_PHONE = saved.p;

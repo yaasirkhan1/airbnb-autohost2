@@ -1104,9 +1104,14 @@ async function sendConciergeEmail({ guestName, propertyId, resourceId, resourceT
     : null;
   const checkIn  = reservation?.check_in  || reservation?.checkin  || 'N/A';
   const checkOut = reservation?.check_out || reservation?.checkout || 'N/A';
-  const code     = reservation?.code || reservation?.confirmation_code || null;
+  const arrivalTime = reservation?.arrival_time || reservation?.check_in_time || '4:00 PM';
+  const g = reservation?.guests;
+  const numGuests = (g && typeof g === 'object')
+    ? (g.total ?? (((g.adults || 0) + (g.children || 0)) || null))
+    : (g ?? reservation?.number_of_guests ?? null);
+  const code = reservation?.code || reservation?.confirmation_code || null;
 
-  const { subject, body } = buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, code });
+  const { subject, body } = buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, arrivalTime, numGuests, code });
 
   const to = process.env.CONCIERGE_EMAIL_TO || '300ptconcierge@gmail.com';
   console.log(`[concierge] Sending email — unit=${unitLabel} guest="${guestName}" to=${to}`);
