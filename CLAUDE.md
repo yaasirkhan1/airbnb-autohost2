@@ -28,6 +28,21 @@ A clean deploy is not "pushed to GitHub" — it is "logs show no errors and beha
 
 ---
 
+## PRICING — MANUAL OVERRIDE PRECEDENCE (standing rule)
+
+**A verbal/manual pricing instruction from the host (Yasser) ALWAYS takes precedence over any pre-set automation** — tier calculations, per-date floors, weekend uplifts, decay/fill campaigns, event prices, and the sanity-swing guard. When the host gives a manual price or min-stay, apply it; never refuse or silently water it down because it conflicts with prior config. The host needs maneuverability to drive bookings on short notice.
+
+**Apply it so config never blocks the change:**
+- Use the override paths: `--override-sanity` on the engine runner (past the >60% swing halt), and direct single-date calendar PUTs to set a price below a floor or outside a campaign window. Single-date PUTs avoid the batch-boundary drop.
+- A manual override is intent, not a mistake — never let a daily cron / campaign silently revert it. If something would overwrite it, fence the dates or update the config event so it persists, and say so.
+
+**But never commit blind — preview + flag, then let the host confirm:**
+- Always **show the resulting prices** (read back the exact per-date values) before/as the change commits.
+- **Flag, in one line,** if the override pushes a price **far below its floor** or makes an **unusually large move** — and let the host confirm before it commits.
+- Routine overrides within normal range: apply directly (the instruction is the authorization) and read-back verify; reserve the confirm step for the far-below-floor / large-move cases above.
+
+---
+
 ## Project Overview
 
 24/7 auto-responder for **7 Airbnb properties** at **300 Peachtree Road NE, Downtown Atlanta, GA**. The server polls Hospitable every 60 seconds for new guest messages, runs them through a hardcoded trigger matcher, and falls back to Claude (claude-sonnet-4-6) for anything that doesn't match. All replies are signed **"Cal"**.
