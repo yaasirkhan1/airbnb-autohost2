@@ -44,6 +44,14 @@ const SHOULD_NOT_MATCH = [
   'Is there a form I should fill out?',
   'Do I need to complete a form before arrival?',
   "I filled out the form already, can't wait to arrive!",
+  // 2026-06-09 FALSE-FIRE regression — Ashley (7-B). A normal pre-arrival question about
+  // WHEN check-in details arrive / HOW to access the building is NOT a front-desk failure.
+  // (Previously matched line 1031 via details + sending + building.)
+  'When will you be sending out the details for the stay? Like the address and how to access the building.',
+  'When will you send me the check-in details?',
+  'How do I access the building?',
+  "What's the address?",
+  'When are you sending the details for my stay?',
 ];
 
 let failed = 0;

@@ -1028,7 +1028,12 @@ const CONCIERGE_REGEX = new RegExp(
   // Send / forward (or "did you send?") my reservation/info/form to the concierge
   // / front desk / building. Broadened beyond the literal word "reservation" and
   // works for both commands and status-questions (lookahead-only, grammar-agnostic).
-  "|(?=[\\s\\S]*\\b(?:reservation|reservations|info|information|informations|form|details|paperwork|registration|booking)\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|forwarded|over\\s+to|pass(?:ed)?\\s+(?:on|along)))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|building|reception|lobby))" +
+  // NOTE: 'details' and 'building' were REMOVED from this pattern on 2026-06-09 — they
+  // false-fired on normal pre-arrival questions ("when will you send the details… access
+  // the building", Ashley/7-B). 'details' = the guest's own awaited info, 'building' = a
+  // place they enter, neither implies a desk handoff. Keep specific reservation/form nouns
+  // + a real desk word (concierge/front desk/desk/reception/lobby).
+  "|(?=[\\s\\S]*\\b(?:reservation|reservations|info|information|informations|form|paperwork|registration|booking)\\b)(?=[\\s\\S]*(?:send|sent|sending|forward|forwarded|over\\s+to|pass(?:ed)?\\s+(?:on|along)))(?=[\\s\\S]*(?:concierge|front\\s+desk|\\bdesk\\b|reception|lobby))" +
   // NOTE: "key" / fob / entry-code / door-code phrasings intentionally do NOT trigger
   // the front-desk contingency. Every unit has a coded door lock (Hospitable's Schlage
   // integration), so a guest saying "key"/"fob" means a building-access fob or amenity
