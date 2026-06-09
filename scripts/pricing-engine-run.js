@@ -448,7 +448,21 @@ async function doRollback(args) {
         aborted = true; break;
       }
       if (args.batch) {
-        const v = await readBackVerify(propertyId, pushRows);
+        let v = await readBackVerify(propertyId, pushRows);
+        // SELF-HEAL the batch-boundary drop: a multi-date PUT can silently drop its trailing
+        // date (observed 2026-06-09 — Dec 5, the last row of its batch, was ignored while a
+        // single-date PUT applied fine). Re-push each STILL-missed date as its own single-date
+        // PUT (which applies reliably) and re-verify, before deciding to abort. This guarantees
+        // no real date silently drops just because it landed last in a batch.
+        if (!v.verified && Array.isArray(v.mismatches) && v.mismatches.length) {
+          const stuck = new Set(v.mismatches.map(m => String(m).split(':')[0].trim()));
+          const retryRows = pushRows.filter(r => stuck.has(r.date));
+          if (retryRows.length) {
+            console.log(`  ${label} [${span}]: read-back missed ${retryRows.length} date(s) — re-pushing individually (batch-boundary self-heal)`);
+            for (const rr of retryRows) { const pr2 = await pushSlice(propertyId, [rr]); if (!pr2.ok) break; }
+            v = await readBackVerify(propertyId, pushRows);
+          }
+        }
         if (!v.verified) {
           console.log(`  ${label} [${span}]: pushed but READ-BACK MISMATCH (${(v.mismatches || [v.reason]).slice(0, 2).join('; ')}) — ABORTING remaining batches`);
           alert('READBACK_MISMATCH', `${label} [${span}]`, { mismatches: v.mismatches });
