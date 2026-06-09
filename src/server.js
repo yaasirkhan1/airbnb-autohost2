@@ -592,6 +592,14 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
         continue; // concierge path handled this message — skip the generic draftReply
       }
 
+      // Money/refund complaint → NEVER auto-reply. Escalate to host, stay silent (host
+      // handles money/disputes/compensation personally — no bot promises of resolution).
+      if (isMoneyComplaint(body)) {
+        console.log(`[poll/${tag}] 💸 Money/refund complaint — escalated to host, NO auto-reply`);
+        notifyHost({ guestName, messageBody: body, propertyName, conversationKey: resourceId, resourceId, resourceType }).catch(console.error);
+        continue;
+      }
+
       try {
         const { reply, confident } = await draftReply(guestName, body, propertyName, propertyId, false, resourceId, resourceType);
         if (!confident || !reply) {
@@ -983,6 +991,21 @@ async function notifyHost({ guestName, messageBody, propertyName, conversationKe
 }
 
 // ─── Hardcoded responses — bypass Claude for common predictable questions ─────
+
+// ─── Money / refund complaints — NEVER auto-reply ────────────────────────────
+// A guest complaint involving a refund, compensation, money, a dispute, "had to pay",
+// or "cost me" must NOT get an auto-reply. The bot over-promised "coordinating with
+// Airbnb … I'll follow up" on Ashley Marrow's (21-D) hotel-cost complaint, committing the
+// host to a resolution/refund he never authorized. These ESCALATE to the host (SMS) and
+// stay SILENT to the guest — the host handles money, disputes, and compensation personally.
+const COMPLAINT_MONEY_REGEX = new RegExp([
+  '\\brefunds?\\b', '\\breimburs', '\\bcompensat', '\\bcharge\\s?back', '\\bdispute\\b',
+  'cost\\w*\\s+(me|us)\\b', 'out[ -]of[ -]pocket', 'money\\s+back', '\\bowe[ds]?\\s+(me|us)\\b',
+  'lost\\s+money', '(more|my)\\s+money', 'had to\\s+(pay|spend)\\b',
+  'had to\\s+(book|get|rent|find|reserve|grab)\\s+(?:a\\s+|an\\s+|another\\s+|my\\s+)?(hotel|motel|room|airbnb|air\\s?bnb|place|lodging|somewhere)',
+  'want.{0,25}(refund|money\\s+back|compensat)',
+].join('|'), 'i');
+const isMoneyComplaint = (text) => COMPLAINT_MONEY_REGEX.test(String(text || ''));
 
 // ─── Concierge / front-desk access issues ────────────────────────────────────
 
@@ -1720,6 +1743,14 @@ app.post('/webhook/hospitable', (req, res, next) => {
     scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
     console.log(`[webhook] ✓ Concierge (AI) reply scheduled via ${replyResourceType} ${replyResourceId}`);
     return; // concierge path handled this message — skip the generic draftReply
+  }
+
+  // Money/refund complaint → NEVER auto-reply. Escalate to host, stay silent (host
+  // handles money/disputes/compensation personally — no bot promises of resolution).
+  if (isMoneyComplaint(messageBody)) {
+    console.log(`[webhook] 💸 Money/refund complaint — escalated to host, NO auto-reply`);
+    notifyHost({ guestName, messageBody, propertyName, conversationKey: replyResourceId, resourceId: replyResourceId, resourceType: replyResourceType }).catch(console.error);
+    return;
   }
 
   try {
@@ -2999,7 +3030,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 // Exported for unit tests (see scripts/test-*.js). Importing this module does NOT
 // start the server thanks to the `require.main === module` guard around app.listen.
 module.exports = {
-  detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX,
+  detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX, isMoneyComplaint,
   buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
   sendOpenPhoneSms,
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
