@@ -6,6 +6,11 @@ const W = require('../src/wc-fill');
 let pass = 0, fail = 0;
 const check = (name, fn) => { try { fn(); console.log('✓ ' + name); pass++; } catch (e) { console.log('✗ ' + name + ' — ' + e.message); fail++; } };
 
+check('min-stay: Jun 14–20 override → 1, rest of campaign → default 2', () => {
+  for (const d of ['2026-06-14', '2026-06-17', '2026-06-20']) assert.strictEqual(W.wcMinStay(d), 1, `${d} should be 1`);
+  for (const d of ['2026-06-21', '2026-06-24', '2026-06-26']) assert.strictEqual(W.wcMinStay(d), 2, `${d} should be 2`);
+});
+
 check('labels: game / shoulder (±1 of a game) / base', () => {
   assert.strictEqual(W.wcLabel('2026-06-21'), 'game');     // game day
   assert.strictEqual(W.wcLabel('2026-06-20'), 'shoulder'); // day before a game

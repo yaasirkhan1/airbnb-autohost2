@@ -14,7 +14,7 @@ const path = require('path');
 const R = require('../src/pricing-resilience');
 const config = require('../src/pricing-config.json');
 const { isNightBooked, isCalendarUsable, etToday } = require('../src/pricing-guards');
-const { WC_FILL, wcActive, wcFenced, wcFloor, wcLabel, wcUnitType, wcSeed, wcDecayTarget } = require('../src/wc-fill');
+const { WC_FILL, wcActive, wcFenced, wcFloor, wcMinStay, wcLabel, wcUnitType, wcSeed, wcDecayTarget } = require('../src/wc-fill');
 
 const ROOT = path.join(__dirname, '..');
 const CONFIRM = process.argv.includes('--confirm');
@@ -58,7 +58,7 @@ async function fetchCal(id, start, end) {
 }
 async function pushDays(id, rows) {
   return hos('PUT', `/properties/${id}/calendar`,
-    { dates: rows.map(r => ({ date: r.date, price: { amount: r.to * 100 }, min_stay: WC_FILL.minStay })) });
+    { dates: rows.map(r => ({ date: r.date, price: { amount: r.to * 100 }, min_stay: wcMinStay(r.date) })) });
 }
 
 (async () => {
@@ -86,7 +86,7 @@ async function pushDays(id, rows) {
       const target = SEED ? wcSeed(cur, type, d) : wcDecayTarget(cur, type, d, daysBetween(today, d), etHour);
       if (target == null) { console.log(`  ${d}  (no target — skipped)`); continue; }
       if (target >= cur) { console.log(`  ${d} ${wcLabel(d)}  $${cur}  [no change (floor $${floor})]`); continue; }
-      console.log(`  ${d} ${wcLabel(d)}  $${cur} → $${target}  (-$${cur - target}, floor $${floor}, min${WC_FILL.minStay})`);
+      console.log(`  ${d} ${wcLabel(d)}  $${cur} → $${target}  (-$${cur - target}, floor $${floor}, min${wcMinStay(d)})`);
       rows.push({ date: d, from: cur, to: target });
     }
     if (CONFIRM && rows.length) {
@@ -104,7 +104,7 @@ async function pushDays(id, rows) {
         bad = isCalendarUsable(rb) ? rows.filter(r => !(rb.map[r.date] && rb.map[r.date].price === r.to)) : rows;
         if (!bad.length) break;
       }
-      const msBad = isCalendarUsable(rb) ? rows.filter(r => rb.map[r.date] && rb.map[r.date].min_stay !== WC_FILL.minStay) : [];
+      const msBad = isCalendarUsable(rb) ? rows.filter(r => rb.map[r.date] && rb.map[r.date].min_stay !== wcMinStay(r.date)) : [];
       if (bad.length) console.log(`  ⚠ price read-back mismatch on ${bad.length}: ${bad.map(b => b.date).join(', ')}`);
       else { console.log(`  ✓ pushed + verified ${rows.length} night(s)${msBad.length ? ` (⚠ min_stay not set on ${msBad.length})` : ''} | snapshot ${path.basename(snap)}`); totalPushed += rows.length; }
     }

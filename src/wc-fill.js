@@ -17,6 +17,9 @@ const WC_FILL = {
   start: '2026-06-14',          // inclusive
   end:   '2026-06-26',          // inclusive
   minStay: 2,
+  // Host override (2026-06-10): Jun 14–20 → 1-night min (capture single-night bookings on the
+  // soft early-WC nights). Outside this sub-range the campaign default (2) still applies.
+  minStayOverride: { start: '2026-06-14', end: '2026-06-20', value: 1 },
   seedCutPct: 0.07,             // SEED = current − 7%
   units1BR: ['4-L', '7-B', '18-A', '21-D', '23-N', '24-L'],
   unit2BR:  ['21-I'],
@@ -42,6 +45,14 @@ const isWeekend = date => [0, 5, 6].includes(new Date(date + 'T00:00:00Z').getUT
 function wcFloor(unitType, date) {
   const base = WC_FILL.floors[unitType][wcLabel(date)];
   return isWeekend(date) ? Math.round(base * (1 + WC_FILL.weekendUpliftPct)) : base;
+}
+
+// Per-date min-stay: the campaign default, unless a date falls in the host's min-stay override
+// sub-range (Jun 14–20 → 1). The decay runner stamps THIS on every push so the cron never
+// reverts it back to the default.
+function wcMinStay(date) {
+  const o = WC_FILL.minStayOverride;
+  return (o && date >= o.start && date <= o.end) ? o.value : WC_FILL.minStay;
 }
 
 const wcActive = (env = process.env) => WC_FILL.active && env.WC_FILL_OFF !== '1';
@@ -71,6 +82,6 @@ function wcDecayTarget(curPrice, unitType, date, daysToArrival, etHour) {
 }
 
 module.exports = {
-  WC_FILL, wcLabel, isWeekend, wcFloor, wcActive, wcFenced, wcUnitType,
+  WC_FILL, wcLabel, isWeekend, wcFloor, wcMinStay, wcActive, wcFenced, wcUnitType,
   wcSeed, wcStepsPerDay, wcSlot, wcPushStep, wcDecayTarget,
 };
