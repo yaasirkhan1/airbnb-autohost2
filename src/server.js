@@ -13,6 +13,7 @@ const { decideAlert, loadAlerts, saveAlerts } = require('./alert-store');
 const { parseDraftReply } = require('./draft-parse');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = require('./cleaning-schedule');
+const cleaningOverride = require('./cleaning-override');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms, conciergeSms } = require('./concierge-email');
@@ -2727,10 +2728,11 @@ async function buildCleaningEntry(unit, tomorrow) {
 }
 
 function formatCleaningLine(entry) {
+  const tag      = entry.manual ? ' (manual)' : '';
   const vacPart  = `disponible desde las ${entry.vacancyTime}${entry.vacancyConfirmed ? ' ✅' : ''}`;
-  if (!entry.deadlineTime) return `• ${entry.label} — ${vacPart}`;
+  if (!entry.deadlineTime) return `• ${entry.label}${tag} — ${vacPart}`;
   const deadPart = `lista para las ${entry.deadlineTime}${entry.deadlineConfirmed ? ' ✅' : ''}`;
-  return `• ${entry.label} — ${deadPart}, ${vacPart}`;
+  return `• ${entry.label}${tag} — ${deadPart}, ${vacPart}`;
 }
 
 // Pure: assemble the SMS body from cleaning entries (priority/regular split). Exported so a
@@ -2766,7 +2768,18 @@ async function sendCleaningSchedule() {
     await new Promise(r => setTimeout(r, 200));
   }
 
-  const smsBody = buildScheduleSMS(entries, spanishDate);
+  // Merge any host-set manual override for THIS night (add/remove a unit), then expire it so it
+  // can't affect a future run. Pruned by date on load; the applied date is deleted after send.
+  const todayET = dateInTimeZone(new Date(), 'America/New_York');
+  const store   = cleaningOverride.pruneExpired(cleaningOverride.loadStore(), todayET);
+  const override = store[tomorrow];
+  let finalEntries = entries;
+  if (override && ((override.add || []).length || (override.remove || []).length)) {
+    finalEntries = cleaningOverride.applyOverride(entries, override);
+    console.log(`[cleaning] Manual override applied for ${tomorrow}: +[${(override.add || []).join(', ')}] -[${(override.remove || []).join(', ')}]`);
+  }
+
+  const smsBody = buildScheduleSMS(finalEntries, spanishDate);
   console.log(`[cleaning] SMS:\n${smsBody}`);
 
   const apiKey    = process.env.QUO_API_KEY;
@@ -2798,9 +2811,31 @@ async function sendCleaningSchedule() {
     }
   }
 
+  // Expire this night's override now that it's been applied; persist the date-pruned store so a
+  // past override never leaks into a future run (also self-heals if today rolled over).
+  if (store[tomorrow]) delete store[tomorrow];
+  cleaningOverride.saveStore(store);
+
   const allOk = results.every(r => r.ok);
-  return { ok: allOk, smsBody, entries: entries.length, recipients: results };
+  return { ok: allOk, smsBody, entries: finalEntries.length, override: override || null, recipients: results };
 }
+
+// POST /api/cleaning-override — host-set manual add/remove for one night's cleaning schedule.
+// Body: { action: 'add'|'remove', unit: '7-B', date?: 'YYYY-MM-DD' }  (date defaults to tomorrow,
+// i.e. tonight's 9 PM run). Recorded + persisted; merged into that night's run, then auto-expired.
+app.post('/api/cleaning-override', (req, res) => {
+  const { action, unit, date } = req.body || {};
+  if (action !== 'add' && action !== 'remove') return res.status(400).json({ error: "action must be 'add' or 'remove'" });
+  const label = cleaningOverride.canonicalUnit(unit, CLEANING_UNITS.map(u => u.label));
+  if (!label) return res.status(400).json({ error: `unknown unit "${unit}" — valid: ${CLEANING_UNITS.map(u => u.label).join(', ')}` });
+  const todayET    = dateInTimeZone(new Date(), 'America/New_York');
+  const targetDate = date || tomorrowDateString();
+  if (targetDate < todayET) return res.status(400).json({ error: `date ${targetDate} is in the past` });
+  const store = cleaningOverride.recordOverride(cleaningOverride.pruneExpired(cleaningOverride.loadStore(), todayET), targetDate, action, label);
+  cleaningOverride.saveStore(store);
+  console.log(`[cleaning] Override registered: ${action} ${label} for ${targetDate}`);
+  res.json({ ok: true, action, unit: label, date: targetDate, overrides: store[targetDate] });
+});
 
 // ─── Test endpoint ────────────────────────────────────────────────────────────
 
