@@ -28,18 +28,18 @@ check('PROPERTY & BUILDING facts present (verbatim confirmed facts)', () => {
   ]) assert.ok(kb.includes(fact), `property facts missing "${fact}"`);
 });
 
-check('Event-layer distances corrected (and old values gone)', () => {
+check('Event-layer distances: MBS = ~15 min via Centennial Olympic Park (old 20-25 gone everywhere)', () => {
   const kb = loadKnowledgeBase();
-  // corrected values present
-  assert.ok(/MERCEDES-BENZ STADIUM\s*\n\nDistance:\nApproximately 20-25 minute walk/.test(kb), 'MBS should be 20-25');
+  // MBS section reframed to a ~15-min walk through Centennial Olympic Park
+  assert.ok(/MERCEDES-BENZ STADIUM\s*\n\nDistance:\nAbout a 15-minute walk/.test(kb), 'MBS section should be ~15 min');
+  assert.ok(/Mercedes-Benz Stadium[\s\S]{0,60}?Centennial Olympic Park/i.test(kb), 'MBS framed via Centennial Olympic Park');
   assert.ok(/CENTENNIAL OLYMPIC PARK\s*\n\nDistance:\nApproximately 12-15 minute walk/.test(kb), 'Centennial should be 12-15');
-  // MBS must no longer claim 15-20 anywhere
-  assert.ok(!/Mercedes-Benz Stadium is approximately a 15[- ]?(to )?20/.test(kb), 'MBS 15-20 phrasing must be gone');
-  assert.ok(kb.includes('20-25 minute walk from the property'), 'MBS Q corrected');
-  assert.ok(kb.includes('20 to 25 minute walk from the building'), 'MBS example corrected');
-  // GWCC + State Farm now 15-20 (exactly two standalone lines); MBS is 20-25 (one)
+  // no stale 20-25 figure anywhere (Q-and-example mentions corrected too)
+  assert.ok(!/20[- ]?(to )?25 ?minute walk/i.test(kb), 'no stale 20-25 MBS figure should remain anywhere');
+  assert.ok(/Mercedes-Benz Stadium is about a 15-minute walk from the property/i.test(kb), 'MBS Q corrected to ~15 min');
+  assert.ok(/Mercedes-Benz Stadium is about a 15-minute walk from the building/i.test(kb), 'MBS example corrected to ~15 min');
+  // GWCC + State Farm unchanged at 15-20 (exactly two standalone lines)
   assert.strictEqual((kb.match(/^Approximately 15-20 minute walk$/gm) || []).length, 2, 'GWCC + State Farm = two 15-20 lines');
-  assert.strictEqual((kb.match(/^Approximately 20-25 minute walk$/gm) || []).length, 1, 'MBS = one 20-25 line');
 });
 
 check('missing file → empty string (no throw)', () => {

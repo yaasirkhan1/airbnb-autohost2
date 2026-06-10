@@ -1351,6 +1351,24 @@ function checkinAlreadySent(thread) {
   );
 }
 
+// Two-mode tone guidance — paraphrased hospitality SALES and SERVICE principles in our own
+// words (not text from any specific book/source). Selected per message: an INQUIRY (pre-booking)
+// → SALES mode (win the booking); a confirmed RESERVATION → SERVICE mode (flawless, caring stay).
+// TONE ONLY — these never override facts, prices, policies, or any factual guardrail above.
+const SALES_MODE_GUIDANCE = `TONE MODE — SALES (this guest is an INQUIRY / not yet booked; goal: win the booking):
+- Sell the experience and the benefits, not just bare facts — convey what's genuinely great about staying here.
+- Confident, warm, benefit-forward; lead with the upside.
+- Reframe any concern into a positive — turn an objection into a reason to book.
+- Reduce friction at every step: make booking feel easy, low-risk, and obvious; offer to help with the next step.
+- Create desire and light, honest urgency only when natural (great fit for their plans, popular dates fill up) — never pushy, never pressuring, never invent scarcity.
+- Always nudge gently toward the close: invite them to book, or offer to clear up anything holding them back.`;
+const SERVICE_MODE_GUIDANCE = `TONE MODE — SERVICE (this guest has a CONFIRMED reservation; goal: an effortless stay where they feel cared for):
+- Anticipate needs before they're asked — proactively offer the useful next detail.
+- Personalize; treat them as a valued guest, not a ticket number.
+- Take full ownership of any issue — turn a problem into a goodwill moment and make it right.
+- Go a step beyond what's expected whenever it's easy to.
+- Warm, attentive, proactive — make them feel genuinely looked after.`;
+
 async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null) {
   // Front-desk contingency detected by ANY means (single regex, fragment burst, or
   // classifier) → send the EXACT hardcoded reply, never Claude's freeform wording.
@@ -1408,8 +1426,9 @@ Common questions you CAN always answer confidently (set "confident": true):
 - Late checkout requests: Available until 1:30 PM for a $45 fee; confirm availability and send payment request.
 - Heating/cooling/thermostat: Radiation unit under each window; press back two corners of the square panel on top.
 - WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If not listed, set "confident": false.
-- Parking questions: answer the SPECIFIC question from the PARKING KNOWLEDGE BASE section using only its [VERIFIED]/[GUEST-REPORTED] facts. Never state anything tagged VERIFY/YOUR INPUT, never mention safety/break-in notes, point the guest to SpotHero/ParkMobile for live rates, and always close with the parking disclaimer.
+- Parking questions: answer the SPECIFIC question from the PARKING KNOWLEDGE BASE section using only its [VERIFIED]/[GUEST-REPORTED] facts. FRAME PARKING AS EASY AND AFFORDABLE: there are plenty of options nearby at all price points, they're easy to find, and many guests reserve ahead on SpotHero for the best rate — lead with that budget-friendly, reassuring framing and sound confident and upbeat. Never present parking as scarce, pricey, or a hassle. Still: never state anything tagged VERIFY/YOUR INPUT, never quote a specific dollar figure (point to SpotHero/ParkMobile for live rates instead), never mention safety/break-in notes, and always close with the parking rates-change disclaimer.
 - Local area / nearby venues / things to do / walking distances / transit & MARTA / getting to the stadium, arena, or convention center / downtown events: answer using the LOCAL AREA & EVENTS KNOWLEDGE section below. Use ONLY the facts stated there (distances, walk times, transit). If a specific detail is not in that section, set "confident": false rather than guessing.
+- Mercedes-Benz Stadium distance specifically: answer warmly and sales-forward — it's about a 15-minute walk, a pleasant and easy stroll through Centennial Olympic Park (one of the nicest, most convenient routes downtown). Emphasize how easy, enjoyable, and convenient the walk is and the scenic route, not just the number; frame it as a quick, scenic stroll right to the stadium, never as far or a hassle.
 
 Reply style — text like a real host, not a customer-service bot (voice only; never change facts/policies):
 - Warm and genuinely helpful, but BRIEF and human — like a real person texting back, not a script.
@@ -1480,9 +1499,14 @@ ${knowledgeSection}
 ${JSON_INSTRUCTIONS}`;
   }
 
+  // Two-mode tone (TONE ONLY — never overrides facts/prices/policies/guardrails): an INQUIRY
+  // (pre-booking) → SALES mode (win the booking); a confirmed RESERVATION → SERVICE mode.
+  const modeBlock = resourceType === 'reservation' ? SERVICE_MODE_GUIDANCE : SALES_MODE_GUIDANCE;
+
   // Volatile per-message content — AFTER the cache breakpoint (never cached).
   const dynamicSystem = [
     `You are now replying to ${guestFirst}.`,
+    modeBlock,
     parkingSection,
     exampleBlock,
   ].filter(s => s && s.trim()).join('\n');

@@ -64,6 +64,17 @@ Authorization: Bearer <API_SECRET>
 
 ---
 
+## RESPONDER TONE — two modes (sales vs service)
+
+The guest auto-responder (`draftReply`) runs the **brief, answer-first, human voice** (signed "Cal", no scripted empathy), **plus** a per-message tone mode selected by `resourceType` (`SALES_MODE_GUIDANCE` / `SERVICE_MODE_GUIDANCE` injected into the dynamic system block). **Tone only — never overrides facts, prices, policies, or any factual guardrail.**
+
+- **INQUIRY → SALES mode** (pre-booking; goal: win the booking): sell the experience/benefits, confident & benefit-forward, reframe concerns positively, reduce friction, light/honest urgency only (never invent scarcity), gently move toward the close.
+- **Confirmed RESERVATION → SERVICE mode** (booked; goal: an effortless, cared-for stay): anticipate needs, personalize, take ownership of issues (turn problems into goodwill), go a step beyond, warm/attentive/proactive.
+
+These are paraphrased general hospitality principles (our own words). Factual guardrails stay in force — incl. **parking** (frame easy/affordable, plenty of options at all price points, reserve on SpotHero for best rate; no dollar quotes, no crime mentions, rates-change disclaimer) and **stadium distance** (~15-min walk via Centennial Olympic Park, framed as an easy enjoyable stroll). Money/refund complaints still escalate silently regardless of mode.
+
+---
+
 ## Project Overview
 
 24/7 auto-responder for **7 Airbnb properties** at **300 Peachtree Road NE, Downtown Atlanta, GA**. The server polls Hospitable every 60 seconds for new guest messages, runs them through a hardcoded trigger matcher, and falls back to Claude (claude-sonnet-4-6) for anything that doesn't match. All replies are signed **"Cal"**.
