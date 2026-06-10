@@ -60,5 +60,30 @@ check('EXPIRY end-to-end: yesterday’s override does not apply to tonight’s e
   assert.deepStrictEqual(merged.map(e => e.label), ['Apt 18-A']);
 });
 
+check('normalizeTime parses 4pm / 4:00 PM / 16:00 / 1:30pm → schedule format', () => {
+  assert.strictEqual(O.normalizeTime('4pm'), '4:00PM');
+  assert.strictEqual(O.normalizeTime('4:00 PM'), '4:00PM');
+  assert.strictEqual(O.normalizeTime('16:00'), '4:00PM');
+  assert.strictEqual(O.normalizeTime('1:30pm'), '1:30PM');
+  assert.strictEqual(O.normalizeTime(''), null);
+});
+
+check('PRIORITY/DEADLINE: manualEntry honors priority + ready-by time (defaults 4:00PM)', () => {
+  const e = O.manualEntry('Apt 24-L', { priority: true, deadline: '4:00PM' });
+  assert.strictEqual(e.priority, true);
+  assert.strictEqual(e.deadlineTime, '4:00PM');
+  assert.strictEqual(e.manual, true);
+  assert.strictEqual(O.manualEntry('Apt 24-L', { priority: true }).deadlineTime, '4:00PM'); // default
+  assert.strictEqual(O.manualEntry('Apt 24-L', {}).priority, false); // non-urgent default
+});
+
+check('PRIORITY end-to-end: urgent add → priority entry with the 4 PM deadline (routes to URGENTE)', () => {
+  const s = O.recordOverride({}, '2026-06-11', 'add', 'Apt 24-L', { priority: true, deadline: '4:00PM' });
+  assert.deepStrictEqual(s['2026-06-11'].add, [{ label: 'Apt 24-L', priority: true, deadline: '4:00PM' }]);
+  const merged = O.applyOverride([{ label: 'Apt 18-A', priority: false }], s['2026-06-11']);
+  const e = merged.find(x => x.label === 'Apt 24-L');
+  assert.ok(e && e.priority === true && e.deadlineTime === '4:00PM' && e.manual === true, 'urgent manual entry with deadline');
+});
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

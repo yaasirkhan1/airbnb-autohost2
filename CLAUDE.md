@@ -47,14 +47,16 @@ A clean deploy is not "pushed to GitHub" — it is "logs show no errors and beha
 
 A nightly **9:00 PM ET cron** (`sendCleaningSchedule` in server.js) texts the cleaner + host a Spanish turnover list via OpenPhone — units with a checkout **tomorrow**; same-day turnovers flagged `⚡ URGENTE`.
 
-**Manual override from the host's phone:** when the host says **"add &lt;unit&gt; to cleaning [tomorrow | &lt;date&gt;]"** or **"remove &lt;unit&gt; from cleaning [tomorrow | &lt;date&gt;]"**, register it by calling the LIVE endpoint (do NOT edit code or redeploy for a one-off):
+**Manual override from the host's phone:** when the host says **"add &lt;unit&gt; to cleaning [tomorrow | &lt;date&gt;]"**, **"remove &lt;unit&gt; from cleaning [tomorrow | &lt;date&gt;]"**, or an urgent variant **"add &lt;unit&gt; to cleaning tomorrow, urgent, ready by 4pm"**, register it by calling the LIVE endpoint (do NOT edit code or redeploy for a one-off):
 
 ```
 POST https://airbnb-autohost2-production.up.railway.app/api/cleaning-override
 Authorization: Bearer <API_SECRET>
-{ "action": "add" | "remove", "unit": "7-B", "date"?: "YYYY-MM-DD" }   // date defaults to tomorrow
+{ "action": "add"|"remove", "unit": "7-B", "date"?: "YYYY-MM-DD",
+  "priority"?: true, "deadline"?: "4:00 PM" }   // priority + deadline: ADD only; date defaults to tomorrow
 ```
 
+- **Urgent / ready-by:** "urgent" / "make it urgent" / "guest arriving" → `priority: true` (lands in the `⚡ URGENTE` section); "ready by 4pm" / "by 4" → `deadline: "4pm"` (the endpoint normalizes "4pm" / "16:00" → "4:00PM"). A priority add with no stated time defaults the deadline to 4:00PM.
 - Unit tokens are flexible ("7-B" / "7b" / "Apt 7-B"); the endpoint rejects unknown units with the valid list.
 - The override is **persisted to the mounted volume, merged into that night's 9 PM run, then auto-expires** — it's date-keyed, so it can never affect a future night. Tell the host to set it **before 9 PM ET** for that night.
 - **Confirm back** to the host exactly what registered (action, unit, date) from the endpoint's JSON response.

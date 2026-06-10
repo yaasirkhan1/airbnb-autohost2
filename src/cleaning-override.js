@@ -1,10 +1,10 @@
 'use strict';
 // Manual overrides for the nightly 9 PM cleaning schedule. The host prompts Claude from their
-// phone ("add 7-B to cleaning tomorrow" / "remove 4-L from cleaning tomorrow"); Claude POSTs to
-// /api/cleaning-override, which records the override here. The live 9 PM run on Railway loads it,
-// MERGES it into the auto-computed schedule before the SMS goes out, then EXPIRES it — it's
-// date-keyed, so it can never affect a future night. Persisted to the mounted volume (STATE_DIR/
-// DATA_DIR) so it survives a restart/redeploy between when it's set and when the cron fires.
+// phone ("add 7-B to cleaning tomorrow" / "remove 4-L" / "add 24-L tomorrow, urgent, ready by
+// 4pm"); Claude POSTs to /api/cleaning-override, which records the override here. The live 9 PM
+// run on Railway loads it, MERGES it into the auto-computed schedule before the SMS goes out,
+// then EXPIRES it — date-keyed, so it can never affect a future night. Persisted to the mounted
+// volume (STATE_DIR/DATA_DIR) so it survives a restart/redeploy between set time and the cron.
 const fs = require('fs');
 const path = require('path');
 
@@ -22,14 +22,29 @@ function canonicalUnit(token, validLabels) {
   return (validLabels || []).find(l => key(l) === want) || null;
 }
 
-// Record an add/remove for a date into the store. A later action supersedes an earlier opposite
-// one for the same unit/date (so "add" then "remove" = remove). Returns a NEW store.
-function recordOverride(store, dateStr, action, label) {
+// Normalize a ready-by time ("4pm", "4:00 PM", "4 p.m.", "16:00") to the schedule's "4:00PM"
+// format. Returns null for empty input; passes through (stripped) anything unparseable.
+function normalizeTime(s) {
+  if (!s) return null;
+  const m = /^(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?$/i.exec(String(s).trim());
+  if (!m) return String(s).replace(/\s+/g, '');
+  let h = parseInt(m[1], 10); const min = m[2] || '00'; let ap = (m[3] || '').toLowerCase().replace(/\./g, '');
+  if (!ap) { ap = h < 12 ? 'AM' : 'PM'; if (h === 0) h = 12; else if (h > 12) h -= 12; }
+  else { ap = ap[0] === 'p' ? 'PM' : 'AM'; if (h === 0) h = 12; }
+  return `${h}:${min}${ap}`;
+}
+
+const labelOf = a => (typeof a === 'string' ? a : a.label);
+
+// Record an add/remove for a date into the store. `add` items are objects {label, priority,
+// deadline}; `remove` items are labels. A later action supersedes an earlier one for the same
+// unit/date. opts (add only): { priority: bool, deadline: 'H:MMAM/PM' }. Returns a NEW store.
+function recordOverride(store, dateStr, action, label, opts = {}) {
   const s = { ...(store || {}) };
   const day = { add: [], remove: [], ...(s[dateStr] || {}) };
-  day.add = day.add.filter(u => u !== label);
+  day.add = day.add.filter(a => labelOf(a) !== label);
   day.remove = day.remove.filter(u => u !== label);
-  if (action === 'add') day.add = [...day.add, label];
+  if (action === 'add') day.add = [...day.add, { label, priority: !!opts.priority, deadline: opts.deadline || null }];
   else if (action === 'remove') day.remove = [...day.remove, label];
   s[dateStr] = day;
   return s;
@@ -42,21 +57,32 @@ function pruneExpired(store, todayStr) {
   return out;
 }
 
-// A manual cleaning entry (regular priority, standard 11 AM vacancy), flagged manual so the SMS
-// can mark it. Shape matches buildCleaningEntry's output in server.js.
-function manualEntry(label) {
-  return { label, priority: false, vacancyTime: '11:00AM', vacancyConfirmed: false, deadlineTime: null, deadlineConfirmed: false, manual: true };
+// A manual cleaning entry. opts: { priority: bool, deadline: 'H:MMAM/PM' }. A priority entry
+// defaults its ready-by deadline to 4:00PM (same as an auto same-day turnover) if none given.
+// Shape matches buildCleaningEntry's output in server.js.
+function manualEntry(label, opts = {}) {
+  const priority = !!opts.priority;
+  return {
+    label, priority,
+    vacancyTime: '11:00AM', vacancyConfirmed: false,
+    deadlineTime: opts.deadline || (priority ? '4:00PM' : null), deadlineConfirmed: false,
+    manual: true,
+  };
 }
 
-// Merge an override {add:[label], remove:[label]} into the auto-computed entries: `remove` drops
-// matching entries; `add` appends a manual entry for any unit not already scheduled (no dup, and
-// never downgrades a real priority entry to a manual one).
+// Merge an override into the auto-computed entries: `remove` drops matching entries; `add`
+// appends a manual entry (honoring priority/deadline) for any unit not already scheduled — no
+// dup, and never downgrades a real priority entry to a manual one.
 function applyOverride(entries, override) {
   let merged = (entries || []).slice();
   const add = (override && override.add) || [];
   const remove = (override && override.remove) || [];
   if (remove.length) merged = merged.filter(e => !remove.includes(e.label));
-  for (const label of add) if (!merged.some(e => e.label === label)) merged.push(manualEntry(label));
+  for (const item of add) {
+    const label = labelOf(item);
+    const opts = typeof item === 'string' ? {} : { priority: item.priority, deadline: item.deadline };
+    if (!merged.some(e => e.label === label)) merged.push(manualEntry(label, opts));
+  }
   return merged;
 }
 
@@ -68,4 +94,4 @@ function saveStore(store) {
   fs.writeFileSync(p, JSON.stringify(store, null, 2));
 }
 
-module.exports = { canonicalUnit, recordOverride, pruneExpired, manualEntry, applyOverride, loadStore, saveStore, storePath };
+module.exports = { canonicalUnit, normalizeTime, recordOverride, pruneExpired, manualEntry, applyOverride, loadStore, saveStore, storePath };

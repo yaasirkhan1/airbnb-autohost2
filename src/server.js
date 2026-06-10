@@ -2824,17 +2824,27 @@ async function sendCleaningSchedule() {
 // Body: { action: 'add'|'remove', unit: '7-B', date?: 'YYYY-MM-DD' }  (date defaults to tomorrow,
 // i.e. tonight's 9 PM run). Recorded + persisted; merged into that night's run, then auto-expired.
 app.post('/api/cleaning-override', (req, res) => {
-  const { action, unit, date } = req.body || {};
+  const { action, unit, date, priority, deadline } = req.body || {};
   if (action !== 'add' && action !== 'remove') return res.status(400).json({ error: "action must be 'add' or 'remove'" });
   const label = cleaningOverride.canonicalUnit(unit, CLEANING_UNITS.map(u => u.label));
   if (!label) return res.status(400).json({ error: `unknown unit "${unit}" — valid: ${CLEANING_UNITS.map(u => u.label).join(', ')}` });
   const todayET    = dateInTimeZone(new Date(), 'America/New_York');
   const targetDate = date || tomorrowDateString();
   if (targetDate < todayET) return res.status(400).json({ error: `date ${targetDate} is in the past` });
-  const store = cleaningOverride.recordOverride(cleaningOverride.pruneExpired(cleaningOverride.loadStore(), todayET), targetDate, action, label);
+  const normDeadline = cleaningOverride.normalizeTime(deadline);   // 'add' only; "4pm" → "4:00PM"
+  const store = cleaningOverride.recordOverride(
+    cleaningOverride.pruneExpired(cleaningOverride.loadStore(), todayET),
+    targetDate, action, label, { priority: !!priority, deadline: normDeadline },
+  );
   cleaningOverride.saveStore(store);
-  console.log(`[cleaning] Override registered: ${action} ${label} for ${targetDate}`);
-  res.json({ ok: true, action, unit: label, date: targetDate, overrides: store[targetDate] });
+  const urgent = action === 'add' && !!priority;
+  console.log(`[cleaning] Override registered: ${action} ${label} for ${targetDate}${urgent ? ` (URGENT, ready by ${normDeadline || '4:00PM'})` : ''}`);
+  res.json({
+    ok: true, action, unit: label, date: targetDate,
+    priority: action === 'add' ? !!priority : undefined,
+    deadline: action === 'add' ? (normDeadline || (priority ? '4:00PM' : null)) : undefined,
+    overrides: store[targetDate],
+  });
 });
 
 // ─── Test endpoint ────────────────────────────────────────────────────────────
