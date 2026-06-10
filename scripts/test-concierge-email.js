@@ -17,7 +17,6 @@ const sample = {
   checkIn:  '2026-06-20T16:00:00-04:00',
   checkOut: '2026-06-27T11:00:00-04:00',
   numGuests: 2,
-  code: 'HMFTKY3AZM',
 };
 
 check('dates render as readable "Weekday, Month D, YYYY" — never raw timestamps', () => {
@@ -64,23 +63,24 @@ check('ships an HTML body with real line breaks (<br>) and paragraphs (<p>)', ()
   assert.ok(/Arrival &amp; Departure Dates:/.test(html), 'ampersand must be HTML-escaped');
 });
 
-check('each label shows the REAL value next to it (incl. confirmation code)', () => {
+check('each label shows the REAL value next to it', () => {
   const { body } = buildConciergeEmail(sample);
   assert.ok(body.includes('Name of guest: Dekarius Pitts'), 'name not populated');
   assert.ok(body.includes('Unit Number: 24-L'), 'unit not populated');
-  assert.ok(body.includes('Confirmation Code: HMFTKY3AZM'), 'confirmation code not populated');
   assert.ok(body.includes('Number of guests: 2'), 'guest count not populated');
   assert.ok(body.includes('The person authorizing the stay: Yasser Khan'), 'authorizer not populated');
 });
 
-check('missing code degrades to N/A', () => {
-  const { body } = buildConciergeEmail({ ...sample, code: null });
-  assert.ok(/Confirmation Code: N\/A/.test(body), 'code should fall back to N/A');
+check('Confirmation Code line is removed entirely (body + html)', () => {
+  const { subject, body, html } = buildConciergeEmail(sample);
+  assert.ok(!/confirmation code/i.test(body), 'Confirmation Code must not appear in the body');
+  assert.ok(!/confirmation code/i.test(html), 'Confirmation Code must not appear in the html');
+  assert.ok(!/confirmation code/i.test(subject), 'Confirmation Code must not appear in the subject');
 });
 
 check('labels appear in the exact required order', () => {
   const { body } = buildConciergeEmail(sample);
-  const order = ['Name of guest:', 'Arrival & Departure Dates:', 'Unit Number:', 'Confirmation Code:', 'Arrival Time:', 'Number of guests:', 'The person authorizing the stay:'];
+  const order = ['Name of guest:', 'Arrival & Departure Dates:', 'Unit Number:', 'Arrival Time:', 'Number of guests:', 'The person authorizing the stay:'];
   const idx = order.map(l => body.indexOf(l));
   assert.ok(idx.every(i => i >= 0), `a label is missing: ${JSON.stringify(idx)}`);
   for (let i = 1; i < idx.length; i++) assert.ok(idx[i] > idx[i - 1], `order wrong at "${order[i]}"`);

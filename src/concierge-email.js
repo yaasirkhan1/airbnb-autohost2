@@ -29,10 +29,9 @@ function fmtTime(value) {
 }
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-function buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, arrivalTime, numGuests, code }) {
+function buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, arrivalTime, numGuests }) {
   const arrival = fmtTime(checkIn) || arrivalTime || '4:00 PM';            // from timestamp, else default
   const guests  = (numGuests != null && numGuests !== '') ? String(numGuests) : 'N/A';
-  const conf    = code || 'N/A';
   const dates   = `${fmtDate(checkIn)} – ${fmtDate(checkOut)}`;
   const subject = `Check-In Authorization — ${unitLabel} | ${dates}`;
 
@@ -41,7 +40,6 @@ function buildConciergeEmail({ guestName, unitLabel, checkIn, checkOut, arrivalT
     ['Name of guest', guestName],
     ['Arrival & Departure Dates', dates],
     ['Unit Number', unitLabel],
-    ['Confirmation Code', conf],
     ['Arrival Time', arrival],
     ['Number of guests', guests],
     ['The person authorizing the stay', CONCIERGE_AUTHORIZER],
