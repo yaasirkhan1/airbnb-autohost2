@@ -17,13 +17,14 @@ ok('WC is no longer a hard-skip — every window night now prices', () => {
   }
 });
 
-ok('non-match glide 158→132 (1BR) / 213→178 (2BR), min 2→1', () => {
+ok('non-match glide 158→132 (1BR) / 213→178 (2BR), min flat 1 (WC window override)', () => {
   // Jun 29 is a true non-match night (not a match, not a shoulder).
   assert.strictEqual(at('23-N', '2026-06-29', 7).price, 158);
   assert.strictEqual(at('23-N', '2026-06-29', 0).price, 132);
   assert.strictEqual(at('21-I', '2026-06-29', 7).price, 213);
   assert.strictEqual(at('21-I', '2026-06-29', 0).price, 178);
-  assert.strictEqual(at('23-N', '2026-06-29', 7).minStay, 2);
+  // min-stay now flat 1 across the WC window (baseline minStayHigh set to 1).
+  assert.strictEqual(at('23-N', '2026-06-29', 7).minStay, 1);
   assert.strictEqual(at('23-N', '2026-06-29', 6).minStay, 1);
 });
 
@@ -43,13 +44,13 @@ ok('knockout (Jul 1, Jul 7) 300→250 / 380→338', () => {
   assert.ok(/knockout/i.test(at('23-N', '2026-07-01', 7).event));
 });
 
-ok('semifinal (Jul 15) 375→350 / 475→420, min 2→1 (WC rule)', () => {
+ok('semifinal (Jul 15) 375→350 / 475→420, min flat 1 (host override)', () => {
   assert.strictEqual(at('23-N', '2026-07-15', 7).price, 375);
   assert.strictEqual(at('23-N', '2026-07-15', 0).price, 350);
   assert.strictEqual(at('21-I', '2026-07-15', 7).price, 475);
   assert.strictEqual(at('21-I', '2026-07-15', 0).price, 420);
   assert.strictEqual(at('23-N', '2026-07-15', 0).minStay, 1);
-  assert.strictEqual(at('23-N', '2026-07-15', 7).minStay, 2);
+  assert.strictEqual(at('23-N', '2026-07-15', 7).minStay, 1); // semifinal min-stay set to 1
 });
 
 ok('weekend hard floor holds inside WC (non-match Sat never below $99/$127)', () => {

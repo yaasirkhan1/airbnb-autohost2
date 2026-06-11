@@ -6,9 +6,9 @@ const W = require('../src/wc-fill');
 let pass = 0, fail = 0;
 const check = (name, fn) => { try { fn(); console.log('✓ ' + name); pass++; } catch (e) { console.log('✗ ' + name + ' — ' + e.message); fail++; } };
 
-check('min-stay: Jun 14–20 override → 1, rest of campaign → default 2', () => {
-  for (const d of ['2026-06-14', '2026-06-17', '2026-06-20']) assert.strictEqual(W.wcMinStay(d), 1, `${d} should be 1`);
-  for (const d of ['2026-06-21', '2026-06-24', '2026-06-26']) assert.strictEqual(W.wcMinStay(d), 2, `${d} should be 2`);
+check('min-stay: Jun 14–30 override → 1 (whole WC window)', () => {
+  for (const d of ['2026-06-14', '2026-06-20', '2026-06-26', '2026-06-30'])
+    assert.strictEqual(W.wcMinStay(d), 1, `${d} should be 1`);
 });
 
 check('labels: game / shoulder (±1 of a game) / base', () => {
@@ -50,11 +50,20 @@ check('seed = current−7%, clamped >= floor, NEVER above current', () => {
   assert.strictEqual(W.wcSeed(111, '1BR', '2026-06-21'), 111);
 });
 
-check('decay step: -$1/push <=10d (=-$3/day); 11-20d -$2/day via 2 slots; floor clamp; never raise', () => {
-  // 6 days out (<=10): every slot drops $1
+check('steps/day bands: <=7d -> 3, 8-20d -> 2, 21-42d -> 1 (>=43 -> 0)', () => {
+  assert.strictEqual(W.wcStepsPerDay(7), 3);
+  assert.strictEqual(W.wcStepsPerDay(8), 2);   // was 3 under the old <=10 band
+  assert.strictEqual(W.wcStepsPerDay(10), 2);  // was 3 under the old <=10 band
+  assert.strictEqual(W.wcStepsPerDay(20), 2);
+  assert.strictEqual(W.wcStepsPerDay(21), 1);
+  assert.strictEqual(W.wcStepsPerDay(43), 0);
+});
+
+check('decay step: -$1/push <=7d (=-$3/day); 8-20d -$2/day via 2 slots; floor clamp; never raise', () => {
+  // 6 days out (<=7): every slot drops $1
   assert.strictEqual(W.wcDecayTarget(155, '1BR', '2026-06-22', 6, 9), 154);  // 9am slot
   assert.strictEqual(W.wcDecayTarget(155, '1BR', '2026-06-22', 6, 19), 154); // 7pm slot also drops
-  // 15 days out (11-20): drops at 9am & 3pm slots, NOT 7pm
+  // 15 days out (8-20): drops at 9am & 3pm slots, NOT 7pm
   assert.strictEqual(W.wcDecayTarget(155, '1BR', '2026-06-22', 15, 9), 154);
   assert.strictEqual(W.wcDecayTarget(155, '1BR', '2026-06-22', 15, 19), 155); // 7pm: no drop
   // floor clamp: at floor, stays at floor (never below)

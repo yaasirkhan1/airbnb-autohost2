@@ -17,9 +17,9 @@ const WC_FILL = {
   start: '2026-06-14',          // inclusive
   end:   '2026-06-30',          // inclusive (extended from 6/26 to fence Jun 27–30 so the −5% cut sticks past the 9am engine; self-lifts after 6/30)
   minStay: 2,
-  // Host override (2026-06-10): Jun 14–20 → 1-night min (capture single-night bookings on the
-  // soft early-WC nights). Outside this sub-range the campaign default (2) still applies.
-  minStayOverride: { start: '2026-06-14', end: '2026-06-20', value: 1 },
+  // Host override (2026-06-10, extended 06-11 to 6/30): Jun 14–30 → 1-night min (capture
+  // single-night bookings across the WC window). Outside this range the default (2) applies.
+  minStayOverride: { start: '2026-06-14', end: '2026-06-30', value: 1 },
   seedCutPct: 0.07,             // SEED = current − 7%
   units1BR: ['4-L', '7-B', '18-A', '21-D', '23-N', '24-L'],
   unit2BR:  ['21-I'],
@@ -75,9 +75,9 @@ function wcSeed(curPrice, unitType, date) {
   return Math.min(Math.max(Math.round(curPrice * (1 - WC_FILL.seedCutPct)), floor), Math.round(curPrice));
 }
 
-// Pushes per day by proximity: <=10d -> 3 ($1 at 9/15/19 = -$3/day); 11-20d -> 2 (-$2/day);
+// Pushes per day by proximity: <=7d -> 3 ($1 at 9/15/19 = -$3/day); 8-20d -> 2 (-$2/day);
 // 21-42d -> 1 (-$1/day); else 0. ET push slot: 9->0, 15->1, 19->2.
-function wcStepsPerDay(daysToArrival) { return daysToArrival <= 10 ? 3 : daysToArrival <= 20 ? 2 : daysToArrival <= 42 ? 1 : 0; }
+function wcStepsPerDay(daysToArrival) { return daysToArrival <= 7 ? 3 : daysToArrival <= 20 ? 2 : daysToArrival <= 42 ? 1 : 0; }
 const wcSlot = etHour => etHour < 13 ? 0 : etHour < 17 ? 1 : 2;
 // $ to drop on THIS push: $1 if this slot is within the day's step budget, else $0.
 function wcPushStep(daysToArrival, etHour) { return wcSlot(etHour) < wcStepsPerDay(daysToArrival) ? 1 : 0; }
