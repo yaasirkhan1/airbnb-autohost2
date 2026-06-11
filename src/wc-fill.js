@@ -1,5 +1,5 @@
 'use strict';
-// World Cup June 14–26 FILL-pricing campaign for all vacant 1BR + 2BR units at 300 Peachtree.
+// World Cup June 14–30 FILL-pricing campaign for all vacant 1BR + 2BR units at 300 Peachtree.
 //
 // Model: SEED each vacant night at current−7% (never above current, never below floor), then
 // RATCHET DOWN toward a per-date floor on 9am/3pm/7pm ET pushes — faster as the arrival date
@@ -15,7 +15,7 @@
 const WC_FILL = {
   active: true,                 // KILL SWITCH (also: env WC_FILL_OFF=1 disables)
   start: '2026-06-14',          // inclusive
-  end:   '2026-06-26',          // inclusive
+  end:   '2026-06-30',          // inclusive (extended from 6/26 to fence Jun 27–30 so the −5% cut sticks past the 9am engine; self-lifts after 6/30)
   minStay: 2,
   // Host override (2026-06-10): Jun 14–20 → 1-night min (capture single-night bookings on the
   // soft early-WC nights). Outside this sub-range the campaign default (2) still applies.

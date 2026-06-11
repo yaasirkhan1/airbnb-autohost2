@@ -54,9 +54,10 @@ check('decay step: -$1/push <=10d (=-$3/day); 11-20d -$2/day via 2 slots; floor 
   assert.strictEqual(W.wcDecayTarget(99, '2BR', '2026-06-22', 6, 9) >= W.wcFloor('2BR','2026-06-22'), true);
 });
 
-check('fence covers Jun 14–26, self-lifts outside (and respects kill switch)', () => {
-  assert.ok(W.wcFenced('2026-06-14') && W.wcFenced('2026-06-26')); // inclusive ends
-  assert.ok(!W.wcFenced('2026-06-13') && !W.wcFenced('2026-06-27')); // outside window
+check('fence covers Jun 14–30, self-lifts outside (and respects kill switch)', () => {
+  assert.ok(W.wcFenced('2026-06-14') && W.wcFenced('2026-06-30')); // inclusive ends
+  assert.ok(!W.wcFenced('2026-06-13') && !W.wcFenced('2026-07-01')); // outside window
+  assert.ok(W.wcFenced('2026-06-27')); // Jun 27–30 now fenced (extended to hold the −5% cut)
   assert.ok(!W.wcFenced('2026-06-20', { WC_FILL_OFF: '1' })); // kill switch off
 });
 
