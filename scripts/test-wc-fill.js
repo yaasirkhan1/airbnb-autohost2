@@ -26,7 +26,6 @@ check('weekend = Fri/Sat/Sun only', () => {
 check('floors: tier values, +15% weekend uplift (rounded)', () => {
   assert.strictEqual(W.wcFloor('1BR', '2026-06-22'), 114); // weekday shoulder
   assert.strictEqual(W.wcFloor('1BR', '2026-06-24'), 124); // weekday game
-  assert.strictEqual(W.wcFloor('1BR', '2026-06-20'), 131); // weekend shoulder 114*1.15
   assert.strictEqual(W.wcFloor('1BR', '2026-06-21'), 143); // weekend game 124*1.15
   assert.strictEqual(W.wcFloor('1BR', '2026-06-26'), 114); // weekend base 99*1.15
   assert.strictEqual(W.wcFloor('2BR', '2026-06-22'), 148); // weekday shoulder
@@ -34,12 +33,20 @@ check('floors: tier values, +15% weekend uplift (rounded)', () => {
   assert.strictEqual(W.wcFloor('2BR', '2026-06-26'), 148); // weekend base 129*1.15
 });
 
+check('floor override: Jun 13–20 → flat $72 (both classes); outside range unchanged', () => {
+  assert.strictEqual(W.wcFloor('1BR', '2026-06-13'), 72);
+  assert.strictEqual(W.wcFloor('1BR', '2026-06-20'), 72); // was 131 (weekend shoulder) before override
+  assert.strictEqual(W.wcFloor('2BR', '2026-06-18'), 72); // was 161 (game) before override
+  assert.strictEqual(W.wcFloor('2BR', '2026-06-21'), 185); // just outside range → tiered floor holds
+});
+
 check('seed = current−7%, clamped >= floor, NEVER above current', () => {
   assert.strictEqual(W.wcSeed(167, '1BR', '2026-06-22'), 155); // 167*.93=155.3 -> 155, > floor 114
   assert.strictEqual(W.wcSeed(176, '1BR', '2026-06-24'), 164); // game weekday
   assert.strictEqual(W.wcSeed(225, '2BR', '2026-06-16'), 209); // 225*.93=209.25 -> 209
-  // Jun 14 1BR: current 111, weekend-shoulder floor 131 (>current) → never raised, holds 111
-  assert.strictEqual(W.wcSeed(111, '1BR', '2026-06-14'), 111);
+  // Jun 21 1BR: current 111, weekend-game floor 143 (>current) → never raised, holds 111
+  // (uses an out-of-override date so the "never raise above current" rule is what's tested)
+  assert.strictEqual(W.wcSeed(111, '1BR', '2026-06-21'), 111);
 });
 
 check('decay step: -$1/push <=10d (=-$3/day); 11-20d -$2/day via 2 slots; floor clamp; never raise', () => {
