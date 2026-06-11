@@ -28,11 +28,11 @@ const WC_FILL = {
   floors:   { '1BR': { game: 124, shoulder: 114, base: 99 },
               '2BR': { game: 161, shoulder: 148, base: 129 } },
   weekendUpliftPct: 0.15,
-  // Host override (2026-06-11): Jun 13–20 floor dropped to a flat $72 (both unit classes) to
-  // let the fill decay chase lower on the soft early-WC nights. Other WC dates keep their
+  // Host override (2026-06-11): Jun 13–20 floor dropped per unit class — 1BR $72, 2BR $109 —
+  // to let the fill decay chase lower on the soft early-WC nights. Other WC dates keep their
   // tiered game/shoulder/base + weekend floors. Applies only where wcFloor is consulted
   // (the WC-fenced dates, i.e. 14–20 in this range).
-  floorOverride: { start: '2026-06-13', end: '2026-06-20', value: 72 },
+  floorOverride: { start: '2026-06-13', end: '2026-06-20', value: { '1BR': 72, '2BR': 109 } },
 };
 
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
@@ -50,7 +50,7 @@ const isWeekend = date => [0, 5, 6].includes(new Date(date + 'T00:00:00Z').getUT
 // tier floor with +15% weekend uplift. Whole dollars.
 function wcFloor(unitType, date) {
   const o = WC_FILL.floorOverride;
-  if (o && date >= o.start && date <= o.end) return o.value;
+  if (o && date >= o.start && date <= o.end) return o.value[unitType];
   const base = WC_FILL.floors[unitType][wcLabel(date)];
   return isWeekend(date) ? Math.round(base * (1 + WC_FILL.weekendUpliftPct)) : base;
 }

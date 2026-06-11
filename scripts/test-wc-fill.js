@@ -33,10 +33,11 @@ check('floors: tier values, +15% weekend uplift (rounded)', () => {
   assert.strictEqual(W.wcFloor('2BR', '2026-06-26'), 148); // weekend base 129*1.15
 });
 
-check('floor override: Jun 13–20 → flat $72 (both classes); outside range unchanged', () => {
+check('floor override: Jun 13–20 → 1BR $72 / 2BR $109; outside range unchanged', () => {
   assert.strictEqual(W.wcFloor('1BR', '2026-06-13'), 72);
-  assert.strictEqual(W.wcFloor('1BR', '2026-06-20'), 72); // was 131 (weekend shoulder) before override
-  assert.strictEqual(W.wcFloor('2BR', '2026-06-18'), 72); // was 161 (game) before override
+  assert.strictEqual(W.wcFloor('1BR', '2026-06-20'), 72);  // was 131 (weekend shoulder) before override
+  assert.strictEqual(W.wcFloor('2BR', '2026-06-18'), 109); // was 161 (game) before override
+  assert.strictEqual(W.wcFloor('2BR', '2026-06-20'), 109); // was 170 (weekend shoulder) before override
   assert.strictEqual(W.wcFloor('2BR', '2026-06-21'), 185); // just outside range → tiered floor holds
 });
 
