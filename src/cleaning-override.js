@@ -71,8 +71,11 @@ function manualEntry(label, opts = {}) {
 }
 
 // Merge an override into the auto-computed entries: `remove` drops matching entries; `add`
-// appends a manual entry (honoring priority/deadline) for any unit not already scheduled — no
-// dup, and never downgrades a real priority entry to a manual one.
+// either appends a fresh manual entry (unit not yet scheduled) OR UPDATES the existing entry
+// (unit already auto-scheduled) so an explicit host override can sharpen its ready-by deadline
+// and/or escalate it to the urgent section. No dup, no drop. The "never downgrade a real
+// priority" intent is preserved as an upgrade-only rule (true never flips to false); an explicit
+// manual deadline always wins over the auto-computed one.
 function applyOverride(entries, override) {
   let merged = (entries || []).slice();
   const add = (override && override.add) || [];
@@ -81,7 +84,18 @@ function applyOverride(entries, override) {
   for (const item of add) {
     const label = labelOf(item);
     const opts = typeof item === 'string' ? {} : { priority: item.priority, deadline: item.deadline };
-    if (!merged.some(e => e.label === label)) merged.push(manualEntry(label, opts));
+    const idx = merged.findIndex(e => e.label === label);
+    if (idx === -1) {
+      merged.push(manualEntry(label, opts)); // not yet scheduled → append (unchanged behavior)
+      continue;
+    }
+    // Already scheduled: update in place rather than skip. Copy (don't mutate the caller's entry).
+    const cur = merged[idx];
+    merged[idx] = {
+      ...cur,
+      priority:     cur.priority || !!opts.priority,        // upgrade-only; never downgrade
+      deadlineTime: opts.deadline || cur.deadlineTime,      // explicit manual deadline wins
+    };
   }
   return merged;
 }
