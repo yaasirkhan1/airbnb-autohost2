@@ -65,6 +65,17 @@ const ok = (cond, msg) => { console.log(`  ${cond ? '✓' : '✗'} ${msg}`); if 
       ok(proximityRe.test(reply), `${label}: leads with proximity`);
       ok(!/schedule|agenda|session times|room rate|\$\d/i.test(reply), `${label}: no invented event schedule / hotel rate`);
     }
+
+    // STRICT GROUNDING: an out-of-KB hotel ("Signia by Hilton" is NOT listed) → closest in-house
+    // match from the KB (a listed anchor / the district), never a fabricated distance for the unlisted name.
+    const oq = 'My convention block is at the Signia by Hilton — how close is your place?';
+    const or_ = await draftReply(GUEST, oq, 'Apt 4-L', null, false, null, null);
+    const oreply = (or_ && or_.reply) || '';
+    console.log(`\n  Q (out-of-KB): ${oq}\n  A: ${oreply}\n  ${'─'.repeat(70)}`);
+    ok(oreply.trim().length > 0 && or_.confident === true, 'out-of-KB: still a helpful, confident reply');
+    ok(/hyatt|marriott|marquis|westin|hilton|gwcc|world congress|americasmart|peachtree center|convention district/i.test(oreply),
+      'out-of-KB: gives the closest in-house anchor from the KB');
+    ok(!/signia[^.]{0,40}~?\s*0?\.\d+\s*mi/i.test(oreply), 'out-of-KB: does NOT fabricate a distance for the unlisted hotel');
   }
 
   console.log(`\nRESULT: ${fail === 0 ? 'ALL PASS' : fail + ' FAILED'}`);

@@ -36,11 +36,13 @@ function isConventionQuestion(text) {
 function buildConventionSection(kb = loadConventionKB()) {
   if (!kb) return '';
   return `\nCONVENTION HOTELS & VENUES KNOWLEDGE BASE (authoritative — when the guest mentions a convention, trade show, market, or one of these venues/hotels, use this section):
+- THIS SECTION IS THE ONLY SOURCE OF TRUTH for convention venues/hotels and their distances. State only venues, hotels, addresses, and distances written below — never invent, assume, or supplement with outside facts or numbers.
+- Strict grounding means DO NOT FABRICATE; it does NOT mean refuse. A convention / trade-show / proximity question is ALWAYS answerable from this KB by anchoring to the nearest listed reference — so ALWAYS set "confident": true and NEVER return an empty reply or escalate, even when the exact venue the guest named isn't listed. (This overrides the general "set confident:false if not in the knowledge base" rule for convention/proximity questions.)
+- If the guest names a venue/hotel NOT listed here, do not invent a distance for it. Anchor to the CLOSEST in-house reference from this KB — the nearest listed hotel/venue or the Peachtree Center convention-district framing — and make that the reference point. E.g.: "I don't have that exact spot, but we're right in the Peachtree Center convention district — the Hyatt Regency is directly across the street and the Hilton Atlanta is about 0.24 mi away."
 - LEAD with how close the property is and frame the location as a major convenience; proximity is the #1 selling point.
 - Use ONLY the location/proximity facts here (distances, blocks, which hotel is across the street). Do NOT promise event schedules, room rates, or hotel-specific details not in this file.
 - Place the property relative to the guest's event hotel/venue when they name one (e.g. "the Hyatt Regency is directly across the street").
-- Keep the SALES/SERVICE tone per the two-mode rule: an inquiry → sell walkability/convenience hard; a booked guest → clear, friendly directions.
-- A convention/proximity question always gets a helpful reply: set "confident": true and never return an empty reply.
+- These rules are SUBORDINATE to all existing guardrails and to the two-mode SALES/SERVICE tone: an inquiry → sell walkability/convenience hard; a booked guest → clear, friendly directions. Strict grounding never overrides a guardrail.
 
 ${kb}\n`;
 }
