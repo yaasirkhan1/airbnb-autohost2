@@ -85,5 +85,35 @@ check('PRIORITY end-to-end: urgent add → priority entry with the 4 PM deadline
   assert.ok(e && e.priority === true && e.deadlineTime === '4:00PM' && e.manual === true, 'urgent manual entry with deadline');
 });
 
+check('UPDATE: override on an already-scheduled unit sharpens deadline + escalates priority — no dup, no drop', () => {
+  // 4-L is auto-scheduled as a same-day turnover: priority true, ready-by 4:00PM (unconfirmed).
+  const entries = [
+    { label: 'Apt 18-A', priority: false, vacancyTime: '11:00AM', vacancyConfirmed: false, deadlineTime: null, deadlineConfirmed: false },
+    { label: 'Apt 4-L',  priority: true,  vacancyTime: '11:00AM', vacancyConfirmed: false, deadlineTime: '4:00PM', deadlineConfirmed: false },
+  ];
+  const s = O.recordOverride({}, '2026-06-13', 'add', 'Apt 4-L', { priority: true, deadline: '1:00PM' });
+  const merged = O.applyOverride(entries, s['2026-06-13']);
+
+  const fourL = merged.filter(e => e.label === 'Apt 4-L');
+  assert.strictEqual(fourL.length, 1, 'renders exactly ONCE — no duplicate 4-L line');
+  assert.strictEqual(merged.length, 2, 'no unit dropped');
+  assert.strictEqual(fourL[0].priority, true, 'stays urgent');
+  assert.strictEqual(fourL[0].deadlineTime, '1:00PM', 'deadline updated 4PM → 1PM');
+});
+
+check('UPDATE end-to-end: rendered SMS shows 4-L once, under ⚡ URGENTE, at 1:00PM', () => {
+  const { buildScheduleSMS } = require('../src/server'); // side-effect-free require (require.main guard)
+  const entries = [
+    { label: 'Apt 4-L', priority: true, vacancyTime: '11:00AM', vacancyConfirmed: false, deadlineTime: '4:00PM', deadlineConfirmed: false },
+  ];
+  const s = O.recordOverride({}, '2026-06-13', 'add', 'Apt 4-L', { priority: true, deadline: '1:00PM' });
+  const sms = buildScheduleSMS(O.applyOverride(entries, s['2026-06-13']), 'Sábado Jun 13');
+
+  assert.ok(/⚡ URGENTE/.test(sms), 'has the urgent section');
+  assert.ok(/Apt 4-L .*lista para las 1:00PM/.test(sms), '4-L ready-by reads 1:00PM');
+  assert.ok(!/4:00PM/.test(sms), 'old 4:00PM deadline no longer present');
+  assert.strictEqual((sms.match(/Apt 4-L/g) || []).length, 1, '4-L appears exactly once in the SMS');
+});
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;
