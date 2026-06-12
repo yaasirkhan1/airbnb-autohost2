@@ -23,6 +23,7 @@ const { resolveReplyTarget } = require('./reply-target');
 const { loadKnowledgeBase } = require('./knowledge-base');
 const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
 const { loadRestaurantKB, isRestaurantQuestion, buildRestaurantSection } = require('./restaurant-knowledge');
+const { loadConventionKB, isConventionQuestion, buildConventionSection } = require('./convention-knowledge');
 
 // Concierge / event-intelligence knowledge base (local-area facts). Loaded once at
 // startup from the repo (DATA_DIR), injected into draftReply's system prompt so Claude
@@ -35,6 +36,9 @@ const PARKING_SECTION = buildParkingSection(loadParkingKB());
 // Restaurant facts (src/knowledge/restaurants.md) injected into draftReply on food/restaurant
 // questions only (topic-gated like parking) so the prompt stays lean otherwise.
 const RESTAURANT_SECTION = buildRestaurantSection(loadRestaurantKB());
+// Convention hotels & venues (src/knowledge/conventions.md) injected on convention/trade-show
+// questions only (topic-gated like parking) so the prompt stays lean otherwise.
+const CONVENTION_SECTION = buildConventionSection(loadConventionKB());
 
 const app = express();
 
@@ -1439,6 +1443,7 @@ Common questions you CAN always answer confidently (set "confident": true):
 - Parking questions: answer the SPECIFIC question from the PARKING KNOWLEDGE BASE section using only its [VERIFIED]/[GUEST-REPORTED] facts. FRAME PARKING AS EASY AND AFFORDABLE: there are plenty of options nearby at all price points, they're easy to find, and many guests reserve ahead on SpotHero for the best rate — lead with that budget-friendly, reassuring framing and sound confident and upbeat. Never present parking as scarce, pricey, or a hassle. Still: never state anything tagged VERIFY/YOUR INPUT, never quote a specific dollar figure (point to SpotHero/ParkMobile for live rates instead), never mention safety/break-in notes, and always close with the parking rates-change disclaimer.
 - Local area / nearby venues / things to do / walking distances / transit & MARTA / getting to the stadium, arena, or convention center / downtown events: answer using the LOCAL AREA & EVENTS KNOWLEDGE section below. Use ONLY the facts stated there (distances, walk times, transit). If a specific detail is not in that section, set "confident": false rather than guessing.
 - Restaurant / food / where-to-eat questions: recommend from the RESTAURANT KNOWLEDGE BASE section (only present on food questions). Match the request to a category, give 2–3 picks led by the closest, highest-rated ([TOP PICK]), with each pick's rating and walk distance. Never promise a place is open or quote fixed menu prices (use the $ tier as a guide), and if they want something not listed, offer the closest in-house match rather than sending them to look it up.
+- Convention / trade show / "how close is the property to <venue/hotel>" questions: answer from the CONVENTION HOTELS & VENUES KNOWLEDGE BASE section (only present on convention questions). LEAD with proximity — it's the #1 selling point — and place the property relative to the venue/hotel they name (e.g. Hyatt Regency directly across the street, GWCC/AmericasMart an easy walk). Use only the location/proximity facts there; never promise event schedules or hotel rates.
 - Mercedes-Benz Stadium distance specifically: answer warmly and sales-forward — it's about a 15-minute walk, a pleasant and easy stroll through Centennial Olympic Park (one of the nicest, most convenient routes downtown). Emphasize how easy, enjoyable, and convenient the walk is and the scenic route, not just the number; frame it as a quick, scenic stroll right to the stadium, never as far or a hassle.
 
 Reply style — text like a real host, not a customer-service bot (voice only; never change facts/policies):
@@ -1466,6 +1471,9 @@ Reply style — text like a real host, not a customer-service bot (voice only; n
 
   // Inject the restaurant knowledge base only on food/restaurant questions (topic-gated, like parking).
   const restaurantSection = isRestaurantQuestion(messageBody) ? RESTAURANT_SECTION : '';
+
+  // Inject the convention hotels & venues KB only on convention/trade-show questions (topic-gated).
+  const conventionSection = isConventionQuestion(messageBody) ? CONVENTION_SECTION : '';
 
   // Prompt caching split. The system prompt is built as TWO blocks:
   //   1. stableSystem — large, per-property/global-static content (host profile,
@@ -1525,6 +1533,7 @@ ${JSON_INSTRUCTIONS}`;
     modeBlock,
     parkingSection,
     restaurantSection,
+    conventionSection,
     exampleBlock,
   ].filter(s => s && s.trim()).join('\n');
 
