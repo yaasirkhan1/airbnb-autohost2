@@ -14,6 +14,7 @@ const { parseDraftReply } = require('./draft-parse');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = require('./cleaning-schedule');
 const cleaningOverride = require('./cleaning-override');
+const hostFacts = require('./host-facts');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms, conciergeSms } = require('./concierge-email');
@@ -1403,6 +1404,12 @@ async function draftReply(guestName, messageBody, propertyName, propertyId, conc
   const examples = propertyId ? findSimilarExamples(propertyId, messageBody) : [];
   const vaultEntry = propertyId ? vault.getVaultEntry(propertyId)?.master : null;
 
+  // Host-curated facts, read AT CALL TIME (no restart needed to pick up a freshly added fact).
+  // factsForProperty is scope 'all' today; it's the per-unit hook for later. The section is
+  // explicitly subordinate to every guardrail below — see buildFactsSection.
+  const factsSection = hostFacts.buildFactsSection(
+    hostFacts.factsForProperty(hostFacts.loadStore(), propertyId));
+
   const guestFirst = (guestName || 'there').split(' ')[0];
 
   const JSON_INSTRUCTIONS = `
@@ -1483,6 +1490,7 @@ ${vaultEntry?.guest_access ? `- Guest access / WiFi: ${vaultEntry.guest_access}`
 ${vaultEntry?.getting_around ? `- Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `- Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
+${factsSection}
 ${JSON_INSTRUCTIONS}`;
   } else {
     stableSystem = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style.
@@ -1495,6 +1503,7 @@ ${vaultEntry?.guest_access ? `Guest access / WiFi: ${vaultEntry.guest_access}` :
 ${vaultEntry?.getting_around ? `Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
+${factsSection}
 ${JSON_INSTRUCTIONS}`;
   }
 
@@ -2869,6 +2878,40 @@ app.post('/api/cleaning-override', (req, res) => {
     overrides: store[targetDate],
   });
 });
+
+// POST /api/knowledge — host-curated knowledge facts for the auto-responder.
+// Body: { action: 'add', topic, fact, scope? } | { action: 'remove', topic } | { action: 'list' }.
+// "remember: guests asking about X should be told Y" → add (same topic supersedes the old fact);
+// "forget the fact about X" → remove. GET /api/knowledge also lists. Scope defaults to 'all'
+// (every Atlanta property); pass an array of property ids for per-unit targeting later.
+app.post('/api/knowledge', (req, res) => {
+  const { action, topic, fact, scope } = req.body || {};
+  const facts = hostFacts.loadStore();
+
+  if (action === 'list') return res.json({ ok: true, facts });
+
+  if (action === 'add') {
+    if (!hostFacts.slugTopic(topic)) return res.status(400).json({ error: 'topic is required' });
+    if (!String(fact || '').trim()) return res.status(400).json({ error: 'fact is required' });
+    const next = hostFacts.addFact(facts, { topic, fact, scope: scope || 'all' });
+    hostFacts.saveStore(next);
+    const added = next.find(f => f.id === hostFacts.slugTopic(topic));
+    console.log(`[knowledge] Fact added/updated: "${added.topic}" (scope=${JSON.stringify(added.scope)})`);
+    return res.json({ ok: true, action, fact: added, count: next.length });
+  }
+
+  if (action === 'remove') {
+    if (!hostFacts.slugTopic(topic)) return res.status(400).json({ error: 'topic is required' });
+    const { facts: next, removed } = hostFacts.removeFact(facts, topic);
+    hostFacts.saveStore(next);
+    console.log(`[knowledge] Fact remove "${topic}" → ${removed ? 'removed' : 'no match'}`);
+    return res.json({ ok: true, action, topic, removed, count: next.length });
+  }
+
+  return res.status(400).json({ error: "action must be 'add', 'remove', or 'list'" });
+});
+
+app.get('/api/knowledge', (_req, res) => res.json({ ok: true, facts: hostFacts.loadStore() }));
 
 // ─── Test endpoint ────────────────────────────────────────────────────────────
 
