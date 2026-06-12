@@ -5,7 +5,7 @@
 //
 //   node scripts/pricing-engine-run.js [--days N | --start YMD --end YMD] [--unit 4-L[,7-B]]
 //        [--swing 40] [--confirm] [--batch [N]] [--override-sanity]
-//        [--sanity-changed 80] [--sanity-move 60]
+//        [--sanity-changed 80] [--sanity-move 120]
 //
 // Guardrails:
 //   - Fail-closed fetch: a failed/empty/malformed calendar → SKIP the unit, write nothing.
@@ -73,7 +73,7 @@ const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function parseArgs(argv) {
   const a = { days: 365, swing: 40, confirm: false, units: null, start: null, end: null,
-    batch: 0, overrideSanity: false, sanityChanged: 80, sanityMove: 60, sanityCoverage: 50,
+    batch: 0, overrideSanity: false, sanityChanged: 80, sanityMove: 120, sanityCoverage: 50,
     rollback: null, healthcheck: false, skipPreflight: false, noLock: false };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];

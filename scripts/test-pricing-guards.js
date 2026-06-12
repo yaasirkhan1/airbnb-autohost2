@@ -55,6 +55,15 @@ ok('runSanityCheck passes on a normal run', () => {
   const r = runSanityCheck(rows, { maxChangedPct: 80, maxMovePct: 60 });
   assert.strictEqual(r.halt, false);
 });
+ok('default move threshold is 120% — deliberate deep WC cuts pass, true runaways still halt', () => {
+  const unchanged = Array.from({ length: 9 }, () => ({ oldPrice: 100, newPrice: 100 })); // keep changed% low
+  // $225 → $72 (a deliberate WC cut to the floor) is a 68% move: under the 120% default → no halt.
+  assert.strictEqual(runSanityCheck([{ oldPrice: 225, newPrice: 72 }, ...unchanged]).halt, false);
+  // $100 → $260 (bad-data spike, +160%) still trips the move guard.
+  const runaway = runSanityCheck([{ oldPrice: 100, newPrice: 260 }, ...unchanged]);
+  assert.strictEqual(runaway.halt, true);
+  assert.ok(runaway.reasons.some(x => /single price move/.test(x)));
+});
 
 // ── Guardrail 4: overlap → higher resulting price wins (order-independent) ──
 ok('overlap: higher-priced event wins regardless of config order', () => {

@@ -42,7 +42,7 @@ function etToday(date = new Date(), tz = 'America/New_York') {
 // rows: [{ oldPrice, newPrice }] (already excludes skips and booked).
 function runSanityCheck(rows, opts = {}) {
   const maxChangedPct = opts.maxChangedPct != null ? opts.maxChangedPct : 80;
-  const maxMovePct = opts.maxMovePct != null ? opts.maxMovePct : 60;
+  const maxMovePct = opts.maxMovePct != null ? opts.maxMovePct : 120;
   const minCoveragePct = opts.minCoveragePct != null ? opts.minCoveragePct : 50;
   let changedCount = 0, totalWithCurrent = 0, totalRows = 0, maxMovePctSeen = 0;
   for (const r of rows || []) {
