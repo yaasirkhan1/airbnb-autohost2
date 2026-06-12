@@ -22,6 +22,7 @@ const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-pr
 const { resolveReplyTarget } = require('./reply-target');
 const { loadKnowledgeBase } = require('./knowledge-base');
 const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
+const { loadRestaurantKB, isRestaurantQuestion, buildRestaurantSection } = require('./restaurant-knowledge');
 
 // Concierge / event-intelligence knowledge base (local-area facts). Loaded once at
 // startup from the repo (DATA_DIR), injected into draftReply's system prompt so Claude
@@ -31,6 +32,9 @@ const KNOWLEDGE_BASE = loadKnowledgeBase();
 // questions so Claude answers the specific question from verified facts only —
 // replaces the old one-size-fits-all PARKING_REPLY block.
 const PARKING_SECTION = buildParkingSection(loadParkingKB());
+// Restaurant facts (src/knowledge/restaurants.md) injected into draftReply on food/restaurant
+// questions only (topic-gated like parking) so the prompt stays lean otherwise.
+const RESTAURANT_SECTION = buildRestaurantSection(loadRestaurantKB());
 
 const app = express();
 
@@ -1434,6 +1438,7 @@ Common questions you CAN always answer confidently (set "confident": true):
 - WiFi password: Use the wifi name and password from the PROPERTY DETAILS section above. If not listed, set "confident": false.
 - Parking questions: answer the SPECIFIC question from the PARKING KNOWLEDGE BASE section using only its [VERIFIED]/[GUEST-REPORTED] facts. FRAME PARKING AS EASY AND AFFORDABLE: there are plenty of options nearby at all price points, they're easy to find, and many guests reserve ahead on SpotHero for the best rate — lead with that budget-friendly, reassuring framing and sound confident and upbeat. Never present parking as scarce, pricey, or a hassle. Still: never state anything tagged VERIFY/YOUR INPUT, never quote a specific dollar figure (point to SpotHero/ParkMobile for live rates instead), never mention safety/break-in notes, and always close with the parking rates-change disclaimer.
 - Local area / nearby venues / things to do / walking distances / transit & MARTA / getting to the stadium, arena, or convention center / downtown events: answer using the LOCAL AREA & EVENTS KNOWLEDGE section below. Use ONLY the facts stated there (distances, walk times, transit). If a specific detail is not in that section, set "confident": false rather than guessing.
+- Restaurant / food / where-to-eat questions: recommend from the RESTAURANT KNOWLEDGE BASE section (only present on food questions). Match the request to a category, give 2–3 picks led by the closest, highest-rated ([TOP PICK]), with each pick's rating and walk distance. Never promise a place is open or quote fixed menu prices (use the $ tier as a guide), and if they want something not listed, offer the closest in-house match rather than sending them to look it up.
 - Mercedes-Benz Stadium distance specifically: answer warmly and sales-forward — it's about a 15-minute walk, a pleasant and easy stroll through Centennial Olympic Park (one of the nicest, most convenient routes downtown). Emphasize how easy, enjoyable, and convenient the walk is and the scenic route, not just the number; frame it as a quick, scenic stroll right to the stadium, never as far or a hassle.
 
 Reply style — text like a real host, not a customer-service bot (voice only; never change facts/policies):
@@ -1458,6 +1463,9 @@ Reply style — text like a real host, not a customer-service bot (voice only; n
   // Inject the parking knowledge base only on parking questions (keeps the prompt
   // lean otherwise). Replaces the old hardcoded PARKING_REPLY one-liner branch.
   const parkingSection = isParkingQuestion(messageBody) ? PARKING_SECTION : '';
+
+  // Inject the restaurant knowledge base only on food/restaurant questions (topic-gated, like parking).
+  const restaurantSection = isRestaurantQuestion(messageBody) ? RESTAURANT_SECTION : '';
 
   // Prompt caching split. The system prompt is built as TWO blocks:
   //   1. stableSystem — large, per-property/global-static content (host profile,
@@ -1516,6 +1524,7 @@ ${JSON_INSTRUCTIONS}`;
     `You are now replying to ${guestFirst}.`,
     modeBlock,
     parkingSection,
+    restaurantSection,
     exampleBlock,
   ].filter(s => s && s.trim()).join('\n');
 
