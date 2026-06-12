@@ -64,6 +64,28 @@ Authorization: Bearer <API_SECRET>
 
 ---
 
+## HOST-ADDED KNOWLEDGE FACTS — plain-English facts the host teaches the bot
+
+The host grows the auto-responder's knowledge by telling Claude facts in plain English from their phone. These facts are **only ever the ones the host explicitly adds** — nothing is auto-learned from guest threads. Recognize these phrasings and call the LIVE endpoint (do NOT edit code or redeploy for a fact):
+
+```
+POST https://airbnb-autohost2-production.up.railway.app/api/knowledge
+Authorization: Bearer <API_SECRET>
+{ "action": "add"|"remove"|"list", "topic": "discount programs for the Georgia Aquarium",
+  "fact": "Yes — CityPASS/C3 bundle it at a discount…", "scope"?: "all" }
+```
+
+- **"remember: guests asking about &lt;X&gt; should be told &lt;Y&gt;"** (or "remember: &lt;fact&gt;", "add a fact: …", "the bot should know …") → `action:"add"` with `topic`=X, `fact`=Y. **A same-topic add SUPERSEDES the old fact** (one fact per topic) — so "update the X fact to …" is just another add.
+- **"forget the fact about &lt;X&gt;"** / "remove/delete the &lt;X&gt; fact" → `action:"remove"` with `topic`=X. Response `removed:true|false`.
+- **"what facts does the bot know?"** / "list the facts" → `action:"list"` (or `GET /api/knowledge`).
+- **Scope is ALL-UNITS** (every Atlanta property) for now; `scope` defaults to `"all"`. Per-unit targeting is structured-for but not wired (`factsForProperty` + a `scope` array) — don't promise per-unit yet.
+- **Confirm back** to the host exactly what registered (topic + whether it superseded an existing fact) from the endpoint JSON.
+- Facts are **persisted to the volume** and read by `draftReply` **at call time** (no redeploy needed to take effect). They're injected as a `HOST-ADDED FACTS` section that is **explicitly SUBORDINATE to every guardrail** (parking rules, stadium framing, price/policy/fee facts, `confident:false` escalation) — a fact can never override those.
+- Phrase each fact as a **scoped condition** ("If a guest asks about X, tell them Y") so it maps to intent, not a stray keyword.
+- Code: `src/host-facts.js` (store + pure logic); endpoint `POST /api/knowledge` + injection in `draftReply` (server.js); tests `scripts/test-host-facts.js`. Whole-list injection today; **topic-gating** (filter facts by keyword match like `isParkingQuestion`) slots into `buildFactsSection` if the list grows large.
+
+---
+
 ## RESPONDER TONE — two modes (sales vs service)
 
 The guest auto-responder (`draftReply`) runs the **brief, answer-first, human voice** (signed "Cal", no scripted empathy), **plus** a per-message tone mode selected by `resourceType` (`SALES_MODE_GUIDANCE` / `SERVICE_MODE_GUIDANCE` injected into the dynamic system block). **Tone only — never overrides facts, prices, policies, or any factual guardrail.**
