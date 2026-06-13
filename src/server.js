@@ -2167,12 +2167,6 @@ app.put('/api/pricing', async (req, res) => {
     return res.status(400).json({ error: 'updates array required: [{date, price (USD), min_stay?}]' });
   }
 
-  const calDays = updates.map(u => ({
-    date: u.date,
-    price: { amount: Math.round(u.price * 100) },
-    ...(u.min_stay != null && { min_stay: u.min_stay }),
-  }));
-
   let targetIds = Array.isArray(property_ids) && property_ids.length > 0 ? property_ids : null;
   if (!targetIds) {
     try {
@@ -2186,11 +2180,30 @@ app.put('/api/pricing', async (req, res) => {
     }
   }
 
+  // SAFETY FLOOR/CEILING — applied per property, never trusting the caller's number.
+  // A compounding/runaway discount (the $3.60 incident) can never push a sub-floor price:
+  // any value below the unit floor ($175 1BR / $250 2BR) is raised to the floor, anything
+  // above the ceiling is capped, and both are recorded in `clamped` so the clamp is visible
+  // (never silent). Floors come from the same PRICE_RULES the hourly engine uses.
   const results = [];
   for (const id of targetIds) {
+    const rules = getPriceRules(id);
+    const clamped = [];
+    const calDays = updates.map(u => {
+      let price = u.price;
+      if (typeof price === 'number') {
+        if (price < rules.floor)        { clamped.push({ date: u.date, from: price, to: rules.floor,   bound: 'floor' });   price = rules.floor; }
+        else if (price > rules.ceiling) { clamped.push({ date: u.date, from: price, to: rules.ceiling, bound: 'ceiling' }); price = rules.ceiling; }
+      }
+      return {
+        date: u.date,
+        price: { amount: Math.round(price * 100) },
+        ...(u.min_stay != null && { min_stay: u.min_stay }),
+      };
+    });
     try {
       await hospPut(`/properties/${id}/calendar`, calDays);
-      results.push({ id, ok: true });
+      results.push({ id, ok: true, ...(clamped.length && { clamped }) });
     } catch (e) {
       results.push({ id, ok: false, error: e.message });
     }
