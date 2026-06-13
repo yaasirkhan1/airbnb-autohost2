@@ -154,6 +154,25 @@ function getPriceRules(id) {
   return id === ATLANTA_2BR_ID ? PRICE_RULES['2br'] : PRICE_RULES['1br'];
 }
 
+// Absolute garbage-floor for MANUAL writes (PUT /api/pricing) — deliberately BELOW the demand
+// engine's business floor ($175/$250) so intentional low overrides (World Cup fill at $72–$109,
+// or any short-notice manual price) still go through, while a catastrophic/compounding value (the
+// $3.60 incident) is still raised to a sane minimum. This is a manual-write guard ONLY; the hourly
+// demand engine keeps its $175/$250 PRICE_RULES floor on its own runs.
+const HARD_MIN_PRICE = { '1br': 72, '2br': 109 };
+
+// Pure: clamp a manual price for property `id` to [HARD_MIN_PRICE, PRICE_RULES.ceiling].
+// Returns { price, bound } where bound ∈ 'floor' | 'ceiling' | null (null = unchanged).
+function clampManualPrice(id, price) {
+  if (typeof price !== 'number' || !isFinite(price)) return { price, bound: null };
+  const type    = id === ATLANTA_2BR_ID ? '2br' : '1br';
+  const floor    = HARD_MIN_PRICE[type];
+  const ceiling = PRICE_RULES[type].ceiling;
+  if (price < floor)   return { price: floor,   bound: 'floor' };
+  if (price > ceiling) return { price: ceiling, bound: 'ceiling' };
+  return { price, bound: null };
+}
+
 // ── Kill-switches for the legacy hourly demand engine (default = ON, current behavior) ──
 // Both read process.env at runtime so a Railway variable change takes effect on the next
 // cycle (and reversibly: unset → legacy engine resumes).
@@ -2167,12 +2186,6 @@ app.put('/api/pricing', async (req, res) => {
     return res.status(400).json({ error: 'updates array required: [{date, price (USD), min_stay?}]' });
   }
 
-  const calDays = updates.map(u => ({
-    date: u.date,
-    price: { amount: Math.round(u.price * 100) },
-    ...(u.min_stay != null && { min_stay: u.min_stay }),
-  }));
-
   let targetIds = Array.isArray(property_ids) && property_ids.length > 0 ? property_ids : null;
   if (!targetIds) {
     try {
@@ -2186,11 +2199,27 @@ app.put('/api/pricing', async (req, res) => {
     }
   }
 
+  // SAFETY GUARD — per property, never trusting the caller's number. A catastrophic/compounding
+  // value (the $3.60 incident) is raised to HARD_MIN_PRICE ($72 1BR / $109 2BR) and anything above
+  // the ceiling is capped; both are recorded in `clamped` so the clamp is visible (never silent).
+  // The floor is the absolute manual-write minimum, deliberately BELOW the demand engine's business
+  // floor, so intentional low overrides (World Cup fill at $72–$109, short-notice manual prices)
+  // still go through.
   const results = [];
   for (const id of targetIds) {
+    const clamped = [];
+    const calDays = updates.map(u => {
+      const { price, bound } = clampManualPrice(id, u.price);
+      if (bound) clamped.push({ date: u.date, from: u.price, to: price, bound });
+      return {
+        date: u.date,
+        price: { amount: Math.round(price * 100) },
+        ...(u.min_stay != null && { min_stay: u.min_stay }),
+      };
+    });
     try {
       await hospPut(`/properties/${id}/calendar`, calDays);
-      results.push({ id, ok: true });
+      results.push({ id, ok: true, ...(clamped.length && { clamped }) });
     } catch (e) {
       results.push({ id, ok: false, error: e.message });
     }
@@ -3253,7 +3282,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 // start the server thanks to the `require.main === module` guard around app.listen.
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX, isMoneyComplaint,
-  callClaude, decideConciergeIntent, isFrustrated, summarizeOlderTurns,
+  callClaude, decideConciergeIntent, isFrustrated, summarizeOlderTurns, clampManualPrice,
   buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
   sendOpenPhoneSms,
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
