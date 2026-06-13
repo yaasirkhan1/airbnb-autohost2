@@ -105,4 +105,50 @@ async function classifyConcierge(text, opts = {}) {
   return rec.fired;
 }
 
-module.exports = { decideConcierge, classifyConcierge, parseVerdict, withTimeout, CLASSIFIER_SYSTEM_PROMPT };
+// ─── Context gate: ACTIVE access problem vs PAST complaint ────────────────────
+// A second classifier that runs AFTER the concierge trigger (regex OR AI) has hit, BEFORE the
+// canned front-desk reply fires. It reads the full message and decides whether this is a live
+// access/check-in problem to solve right now (→ ACCESS, fire the concierge flow) or a complaint
+// about something that already happened (→ COMPLAINT, do NOT fire the canned access reply —
+// route to service recovery / host). This is what stops a frustrated, past-tense grievance from
+// being answered with "we emailed the front desk your check-in info."
+const INTENT_SYSTEM_PROMPT = `You are a strict binary classifier for an Airbnb auto-host at a high-rise with a lobby front desk / concierge. The guest message below has ALREADY been flagged as possibly front-desk related. Your only job is to decide WHICH of two intents it is:
+
+ACCESS — an active, happening-NOW access or check-in problem the host can fix right now by sending the front desk the guest's reservation/authorization. Signals: the guest can't get in or up, is stuck or waiting in the lobby/downstairs, the desk has no record/booking/form/authorization for them, they're being turned away, or they ask the host to send/confirm their reservation to the desk. Present-tense, "right now", needs action.
+
+COMPLAINT — the guest is unhappy, frustrated, or disputing something that ALREADY happened, and is NOT asking to be let in right now. Signals: past tense ("was", "had to", "were", "arrived to find"), grievances about the unit or booking (wrong/misrepresented unit, dirty, double-booked, maintenance issues, not as listed/photos), inconvenience, disappointment, or asking for a refund / discount / compensation / "reconsideration". Even if it mentions "reservation", "building", "they", or "did not receive", if the core is a grievance about the past — it is COMPLAINT.
+
+If the message contains BOTH a live access problem AND a complaint, answer ACCESS (the guest needs in right now; the grievance can be handled after).
+
+Reply with EXACTLY one word: ACCESS or COMPLAINT. No punctuation, no explanation.`;
+
+// Parse the verdict. Match the "compl…" PREFIX (not the whole word): an all-caps "COMPLAINT"
+// tokenizes into several subwords, so a tight token budget can return a truncated "COMPLA" — the
+// prefix still classifies it correctly. Bias: only a complaint-prefix diverts away from the access
+// flow; anything else (incl. unparseable) → 'access', so a classifier glitch never strands a guest
+// with a live access problem. The money-complaint guardrail runs BEFORE this gate anyway.
+function parseIntent(text) {
+  return /^\s*compl/i.test(String(text || '')) ? 'complaint' : 'access';
+}
+
+// Core intent decision. NEVER throws; ALWAYS resolves (within ~timeoutMs) to:
+//   { intent: 'access'|'complaint', raw, source }
+//   source ∈ kill-switch | no-callClaude | ai | ai-fallback
+// Fail-open to 'access' (preserves today's fire-the-concierge behavior on any error/timeout).
+async function classifyAccessIntent({ text, callClaude, env = process.env, timeoutMs = 4000 } = {}) {
+  const aiEnabled = (env && env.CONCIERGE_AI) !== 'false';
+  if (!aiEnabled) return { intent: 'access', raw: null, source: 'kill-switch' };
+  if (typeof callClaude !== 'function') return { intent: 'access', raw: null, source: 'no-callClaude' };
+  try {
+    // 16-token budget so the longer word ("COMPLAINT") returns in full rather than truncating.
+    const raw = await withTimeout(callClaude(INTENT_SYSTEM_PROMPT, String(text || ''), 16), timeoutMs);
+    return { intent: parseIntent(raw), raw, source: 'ai' };
+  } catch (e) {
+    return { intent: 'access', raw: `ERROR:${e.message}`, source: 'ai-fallback' };
+  }
+}
+
+module.exports = {
+  decideConcierge, classifyConcierge, parseVerdict, withTimeout, CLASSIFIER_SYSTEM_PROMPT,
+  classifyAccessIntent, parseIntent, INTENT_SYSTEM_PROMPT,
+};

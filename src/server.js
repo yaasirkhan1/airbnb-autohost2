@@ -16,7 +16,7 @@ const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = 
 const cleaningOverride = require('./cleaning-override');
 const hostFacts = require('./host-facts');
 const { fragmentBurst, routeAction } = require('./concierge-window');
-const { decideConcierge } = require('./concierge-classifier');
+const { decideConcierge, classifyAccessIntent } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms, conciergeSms } = require('./concierge-email');
 const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-properties');
 const { resolveReplyTarget } = require('./reply-target');
@@ -578,36 +578,36 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
           .catch(e => console.error(`[maintenance] SMS failed: ${e.message}`));
       }
 
-      if (conciergeRegexHit) {
-        // AWAIT-gated concierge path (ONLY this case awaits): email first, then the
-        // guest is told "emailed" only on success / honest reply + escalate on failure,
-        // and (trial) the host gets a SENT/FAILED SMS. resolveConciergeReply never throws.
-        const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context: `poll/${tag}` });
-        scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
-        continue; // handled this message
-      }
-
-      // Non-concierge regex MISS → consult the AI classifier (detection logic unchanged).
-      // If it confirms a front-desk hit, run the SAME await-gated contingency as the regex
-      // path (email → concierge SMS → guest confirmation) and SKIP the generic draft.
-      // Awaiting here (vs the old fire-and-forget) is deliberate: it closes the race where
-      // the guest reply was composed before the email outcome was known, and ensures the
-      // guest gets the front-desk confirmation instead of a generic/empty reply.
-      let aiConciergeHit = false;
-      try { aiConciergeHit = await decideConciergeHit(conciergeText, false, `poll/${tag}`); }
-      catch (e) { console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`); }
-      if (aiConciergeHit) {
-        const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context: `poll/${tag}/ai` });
-        scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
-        continue; // concierge path handled this message — skip the generic draftReply
-      }
-
-      // Money/refund complaint → NEVER auto-reply. Escalate to host, stay silent (host
-      // handles money/disputes/compensation personally — no bot promises of resolution).
+      // (1) COMPLAINT GUARDRAIL FIRST — a money/refund complaint must NEVER be answered with the
+      // canned concierge/access reply. Checked BEFORE the concierge fire so an incidental
+      // access-regex match can't short-circuit it (the Ashley/7-B refund-complaint bug, 2026-06-13:
+      // the concierge regex hit first and the money check downstream never ran).
       if (isMoneyComplaint(body)) {
-        console.log(`[poll/${tag}] 💸 Money/refund complaint — escalated to host, NO auto-reply`);
+        console.log(`[poll/${tag}] 💸 Money/refund complaint — escalated to host, NO auto-reply (pre-concierge)`);
         notifyHost({ guestName, messageBody: body, propertyName, conversationKey: resourceId, resourceId, resourceType }).catch(console.error);
         continue;
+      }
+
+      // Concierge detection: regex fast-path; AI classifier consulted only on a regex miss.
+      let conciergeHit = conciergeRegexHit;
+      let conciergeVia = conciergeRegexHit ? 'regex' : '';
+      if (!conciergeHit) {
+        try { conciergeHit = await decideConciergeHit(conciergeText, false, `poll/${tag}`); conciergeVia = conciergeHit ? 'ai' : ''; }
+        catch (e) { console.error(`[concierge-ai] poll decision error (ignored): ${e.message}`); }
+      }
+      if (conciergeHit) {
+        // (2) CONTEXT GATE — before firing the canned reply, classify intent. A live ACCESS problem
+        // → run the await-gated contingency (email → concierge SMS → guest confirmation). A PAST
+        // COMPLAINT that merely tripped the access trigger → do NOT fire the canned reply; fall
+        // through to the normal draftReply, whose SERVICE mode owns the issue (service recovery).
+        const intent = await decideConciergeIntent(conciergeText, `poll/${tag}/${conciergeVia || 'regex'}`);
+        if (intent === 'access') {
+          const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId, resourceType, propertyName, context: `poll/${tag}${conciergeVia === 'ai' ? '/ai' : ''}` });
+          scheduleReply(resourceId, guestName, body, reply, propertyName, propertyId, resourceType);
+          continue; // handled this message
+        }
+        console.log(`[poll/${tag}] concierge trigger OVERRIDDEN by complaint intent — routing to service reply, not the canned access flow`);
+        // fall through to the generic draftReply (SERVICE-mode service recovery)
       }
 
       try {
@@ -857,6 +857,15 @@ async function decideConciergeHit(text, regexHit, context = '') {
   return rec.fired;
 }
 
+// Context gate run AFTER a concierge trigger hits, BEFORE the canned reply fires: classify
+// whether this is a live ACCESS problem (fire concierge) or a PAST COMPLAINT (don't fire the
+// canned access reply). Returns 'access' | 'complaint'. Never throws; fail-open to 'access'.
+async function decideConciergeIntent(text, context = '') {
+  const rec = await classifyAccessIntent({ text, callClaude, env: process.env, timeoutMs: 4000 });
+  console.log(`[concierge-intent] ${context} intent=${rec.intent} source=${rec.source} | "${String(text || '').slice(0, 140)}"`);
+  return rec.intent;
+}
+
 // Run the front-desk contingency once a hit is confirmed: await the email, then
 //   success → (trial) SMS the host "✅ … SENT" when CONCIERGE_NOTIFY_ALL!=='false'
 //   failure → SMS the host "❌ … FAILED" escalation (always)
@@ -1056,8 +1065,13 @@ const CONCIERGE_REGEX = new RegExp(
   // the form", "never received the form", "you never sent me the form", "front desk
   // never got my form", "no one sent the form to the building".
   "|(?=[\\s\\S]*\\bform\\b)(?=[\\s\\S]*\\b(?:never|not|wasn'?t|hasn'?t|haven'?t|didn'?t|did\\s+not|no\\s+one|nobody)\\s+(?:\\w+\\s+){0,2}?(?:sent|send|receiv\\w*|got|get|gotten|gave|give|provided)\\b)" +
-  // Front desk / concierge doesn't have (or never received) the reservation
-  "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:doesn'?t|does\\s+not|didn'?t|did\\s+not|don'?t\\s+have|do\\s+not\\s+have|no\\s+record|can'?t\\s+find|cannot\\s+find|never\\s+(?:got|received)))(?=[\\s\\S]*(?:front\\s+desk|\\bdesk\\b|concierge|reception|lobby|building|\\bthey\\b|system))" +
+  // Front desk / concierge doesn't have (or never received) the reservation.
+  // The third lookahead MUST name a real desk/lobby word. 'building', 'they', and 'system'
+  // were REMOVED on 2026-06-13: they false-fired on a refund complaint (Ashley/7-B) that
+  // only incidentally contained "reservation" + "did not receive" + "they"/"building" with
+  // no actual desk involvement. A bare "they don't have my reservation" now falls to the AI
+  // classifier instead of this zero-width regex clause.
+  "|(?=[\\s\\S]*\\breservation\\b)(?=[\\s\\S]*(?:doesn'?t|does\\s+not|didn'?t|did\\s+not|don'?t\\s+have|do\\s+not\\s+have|no\\s+record|can'?t\\s+find|cannot\\s+find|never\\s+(?:got|received)))(?=[\\s\\S]*(?:front\\s+desk|\\bdesk\\b|concierge|reception|lobby))" +
   // Send / forward (or "did you send?") my reservation/info/form to the concierge
   // / front desk / building. Broadened beyond the literal word "reservation" and
   // works for both commands and status-questions (lookahead-only, grammar-agnostic).
@@ -1774,37 +1788,36 @@ app.post('/webhook/hospitable', (req, res, next) => {
     learnPropertyProfile(propertyId, propertyName).catch(console.error);
   }
 
-  if (conciergeRegexHit) {
-    // AWAIT-gated concierge path (ONLY this case awaits): email first, then the guest
-    // is told "emailed" only on success / honest reply + escalate on failure, and
-    // (trial) the host gets a SENT/FAILED SMS. resolveConciergeReply never throws.
-    const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType, propertyName, context: 'webhook' });
-    scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
-    console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
-    return; // handled this message
-  }
-
-  // Non-concierge regex MISS → consult the AI classifier (detection logic unchanged). If it
-  // confirms a front-desk hit, run the SAME await-gated contingency as the regex path
-  // (email → concierge SMS → guest confirmation) and SKIP the generic draft. Awaiting here
-  // (vs the old fire-and-forget) closes the race where the guest reply was composed before
-  // the email outcome was known, and ensures the guest gets the front-desk confirmation.
-  let aiConciergeHit = false;
-  try { aiConciergeHit = await decideConciergeHit(conciergeText, false, 'webhook'); }
-  catch (e) { console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`); }
-  if (aiConciergeHit) {
-    const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType, propertyName, context: 'webhook/ai' });
-    scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
-    console.log(`[webhook] ✓ Concierge (AI) reply scheduled via ${replyResourceType} ${replyResourceId}`);
-    return; // concierge path handled this message — skip the generic draftReply
-  }
-
-  // Money/refund complaint → NEVER auto-reply. Escalate to host, stay silent (host
-  // handles money/disputes/compensation personally — no bot promises of resolution).
+  // (1) COMPLAINT GUARDRAIL FIRST — a money/refund complaint must NEVER be answered with the
+  // canned concierge/access reply. Checked BEFORE the concierge fire so an incidental access-regex
+  // match can't short-circuit it (the Ashley/7-B refund-complaint bug, 2026-06-13).
   if (isMoneyComplaint(messageBody)) {
-    console.log(`[webhook] 💸 Money/refund complaint — escalated to host, NO auto-reply`);
+    console.log(`[webhook] 💸 Money/refund complaint — escalated to host, NO auto-reply (pre-concierge)`);
     notifyHost({ guestName, messageBody, propertyName, conversationKey: replyResourceId, resourceId: replyResourceId, resourceType: replyResourceType }).catch(console.error);
     return;
+  }
+
+  // Concierge detection: regex fast-path; AI classifier consulted only on a regex miss.
+  let conciergeHit = conciergeRegexHit;
+  let conciergeVia = conciergeRegexHit ? 'regex' : '';
+  if (!conciergeHit) {
+    try { conciergeHit = await decideConciergeHit(conciergeText, false, 'webhook'); conciergeVia = conciergeHit ? 'ai' : ''; }
+    catch (e) { console.error(`[concierge-ai] webhook decision error (ignored): ${e.message}`); }
+  }
+  if (conciergeHit) {
+    // (2) CONTEXT GATE — before firing the canned reply, classify intent. A live ACCESS problem →
+    // run the await-gated contingency (email → concierge SMS → guest confirmation). A PAST COMPLAINT
+    // that merely tripped the access trigger → do NOT fire the canned reply; fall through to the
+    // normal draftReply, whose SERVICE mode owns the issue (service recovery).
+    const intent = await decideConciergeIntent(conciergeText, `webhook/${conciergeVia || 'regex'}`);
+    if (intent === 'access') {
+      const { reply } = await runConciergeContingency({ guestName, propertyId, resourceId: replyResourceId, resourceType: replyResourceType, propertyName, context: `webhook${conciergeVia === 'ai' ? '/ai' : ''}` });
+      scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
+      console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
+      return; // handled this message
+    }
+    console.log(`[webhook] concierge trigger OVERRIDDEN by complaint intent — routing to service reply, not the canned access flow`);
+    // fall through to the generic draftReply (SERVICE-mode service recovery)
   }
 
   try {
@@ -3163,6 +3176,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 // start the server thanks to the `require.main === module` guard around app.listen.
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX, isMoneyComplaint,
+  callClaude, decideConciergeIntent,
   buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
   sendOpenPhoneSms,
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
