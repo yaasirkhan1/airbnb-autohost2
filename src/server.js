@@ -92,7 +92,18 @@ const propertyHistory = new Map();   // propertyId -> [{ guest, host, topic }]
 
 // Polling state
 const seenMessageIds = new Set(); // dedup between webhook + polling
-const recentMsgsByConvo = new Map(); // conversation_id → recent guest msgs (for fragment-burst detection, incl. booking-less)
+const recentMsgsByConvo = new Map(); // conversation_id → recent turns (guest msgs + bot replies) for fragment-burst detection AND inquiry-thread history (GET /inquiries messages is 405)
+const CONVO_BUFFER_CAP = 16;         // keep enough turns for a coherent pre-booking back-and-forth
+// Append a turn to a conversation's in-memory buffer. role 'guest' → guest turn; 'host' → a reply
+// the bot/host sent (so an inquiry thread, which has no GETable history, stays two-sided).
+function pushConvoMsg(conversationId, role, body) {
+  if (!conversationId || !String(body || '').trim()) return;
+  const buf = recentMsgsByConvo.get(conversationId) || [];
+  buf.push({ body: String(body), sender_role: role, created_at: new Date().toISOString() });
+  while (buf.length > CONVO_BUFFER_CAP) buf.shift();
+  recentMsgsByConvo.set(conversationId, buf);
+  if (recentMsgsByConvo.size > 500) recentMsgsByConvo.delete(recentMsgsByConvo.keys().next().value);
+}
 const alertState = loadAlerts(); // conversationKey → host-alert throttle state (persisted to volume)
 let knownPropertyIds  = [];       // populated after initAllPropertyProfiles
 let pollingSince      = null;     // ISO timestamp — only reply to messages after this
@@ -256,7 +267,7 @@ async function fetchReservationsForProperty(propertyId, limit = 40) {
 
 async function fetchMessagesForReservation(reservationId) {
   try {
-    const data = await hospGet(`/reservations/${reservationId}/messages?per_page=20`);
+    const data = await hospGet(`/reservations/${reservationId}/messages?per_page=50`);
     return parseMessages(data);
   } catch (e) {
     console.error(`[learn] Could not fetch messages for reservation ${reservationId}:`, e.message);
@@ -1026,6 +1037,24 @@ const COMPLAINT_MONEY_REGEX = new RegExp([
 ].join('|'), 'i');
 const isMoneyComplaint = (text) => COMPLAINT_MONEY_REGEX.test(String(text || ''));
 
+// ─── Frustration / complaint sentiment (triggers DE-ESCALATION guidance) ─────
+// Heuristic signal that a guest reads as upset/frustrated/complaining, so draftReply layers in
+// DE_ESCALATION_GUIDANCE (a real acknowledgement first, own it, lower the temperature). This is a
+// TONE gate only — it never changes facts/policies, and the isMoneyComplaint escalation (which
+// runs earlier and stays silent) still owns anything about money/refunds. Best-effort: the model
+// also gets the full thread + guidance, so borderline cases are still handled gracefully.
+const FRUSTRATION_REGEX = new RegExp([
+  '\\bfrustrat\\w*', '\\bupset\\b', '\\bangry\\b', '\\bfurious\\b', '\\bannoyed\\b', '\\birritat\\w*',
+  '\\bunacceptable\\b', '\\bridiculous\\b', '\\bdisappoint\\w*', '\\bterrible\\b', '\\bawful\\b',
+  '\\bhorrible\\b', '\\bdisgust\\w*', '\\bfilthy\\b', '\\bnightmare\\b', '\\boutrageous\\b',
+  '\\bappalled\\b', '\\bruined\\b', '\\bthe\\s+worst\\b', '\\bfed\\s+up\\b', '\\bnot\\s+happy\\b',
+  '\\bnot\\s+okay\\b', '\\bnot\\s+acceptable\\b', '\\bvery\\s+(?:disappointed|unhappy|upset)\\b',
+  '\\bcompletely\\s+unacceptable\\b', '\\bspeak\\s+to\\s+(?:a\\s+)?(?:manager|someone|the\\s+owner)\\b',
+  '\\bthis\\s+is\\s+(?:unacceptable|ridiculous|not\\s+okay)\\b', '\\bkeeps?\\s+piling\\s+up\\b',
+  '\\bmultiple\\s+(?:issues|problems|disruptions)\\b', '\\bdid\\s+not\\s+receive\\s+(?:the|what)\\b',
+].join('|'), 'i');
+const isFrustrated = (text) => FRUSTRATION_REGEX.test(String(text || ''));
+
 // ─── Concierge / front-desk access issues ────────────────────────────────────
 
 const CONCIERGE_REGEX = new RegExp(
@@ -1321,8 +1350,22 @@ function findSimilarExamples(propertyId, guestMessage, count = 3) {
 // ("messages already sent to this guest"). This is the fix for the bug where the
 // first host turn (often the check-in details we already sent — door code, Wi-Fi,
 // access) was silently deleted, leaving the model unaware it had been covered.
-// Returns: { messages: [{role, content}], priorContext: string }.
-function buildThreadMessages(thread, latestBody, cap = 12) {
+// For threads longer than `cap`, the oldest turns beyond the window are NOT dropped silently —
+// they're condensed into `olderSummary` so the conversation's opening context survives.
+// Returns: { messages: [{role, content}], priorContext: string, olderSummary: string }.
+//
+// Condense the oldest turns (outside the kept window) into a short digest that preserves the
+// conversation's OPENING context. Deterministic (no LLM): role-label, truncate, cap the count.
+function summarizeOlderTurns(older, maxTurns = 8, perTurn = 160) {
+  if (!older || !older.length) return '';
+  const oneLine = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const head = older.slice(0, maxTurns).map(t =>
+    `${t.role === 'assistant' ? 'You (host)' : 'Guest'}: ${oneLine(t.content).slice(0, perTurn)}`);
+  const more = older.length > maxTurns ? `\n… (+${older.length - maxTurns} more earlier turns)` : '';
+  return head.join('\n') + more;
+}
+
+function buildThreadMessages(thread, latestBody, cap = 30) {
   const HOST_ROLES = new Set(['host', 'co-host', 'teammate']);
   const roleOf = m => (HOST_ROLES.has(m.sender_role || m.sender_type) ? 'assistant' : 'user');
   const latest = (latestBody || '').trim();
@@ -1344,9 +1387,13 @@ function buildThreadMessages(thread, latestBody, cap = 12) {
     turns.push({ role: 'user', content: latest });
   }
 
-  // Keep the last ~cap turns, merge consecutive same-role turns, then ensure the
-  // array starts with a user turn (Anthropic requires the first message be user).
-  turns = turns.slice(-cap);
+  // Keep the last ~cap turns; turns older than that are condensed into olderSummary (so a long
+  // thread keeps its opening context) rather than silently dropped. Then merge consecutive
+  // same-role turns and ensure the array starts with a user turn (Anthropic requires user-first).
+  const kept = turns.slice(-cap);
+  const older = turns.slice(0, Math.max(0, turns.length - kept.length));
+  const olderSummary = summarizeOlderTurns(older);
+  turns = kept;
   const merged = [];
   for (const t of turns) {
     const prev = merged[merged.length - 1];
@@ -1358,7 +1405,7 @@ function buildThreadMessages(thread, latestBody, cap = 12) {
   const droppedLeading = [];
   while (merged.length && merged[0].role !== 'user') droppedLeading.push(merged.shift());
   const priorContext = droppedLeading.map(t => t.content).join('\n\n').trim();
-  return { messages: merged, priorContext };
+  return { messages: merged, priorContext, olderSummary };
 }
 
 // Markers that mean check-in / access info has already been delivered to the guest.
@@ -1391,7 +1438,18 @@ const SERVICE_MODE_GUIDANCE = `TONE MODE — SERVICE (this guest has a CONFIRMED
 - Go a step beyond what's expected whenever it's easy to.
 - Warm, attentive, proactive — make them feel genuinely looked after.`;
 
-async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null) {
+// De-escalation / service-recovery — layered ON TOP of the tone mode when a guest reads as
+// frustrated, upset, or complaining. Distinct from routine SERVICE tone: this one deliberately
+// RELAXES the "answer-first / no empathy preamble / no apology-padding" reply-style rules, because
+// those are for routine messages — an upset guest should get a real, brief acknowledgement first.
+const DE_ESCALATION_GUIDANCE = `DE-ESCALATION MODE — this guest reads as frustrated, upset, or is complaining. For THIS reply, the routine "answer-first, no empathy preamble, no apology" rules are RELAXED (they are for routine messages, not this one):
+- LEAD with a brief, genuine, specific acknowledgement of what went wrong and how it affected them — sincere and human, not a scripted line ("I completely understand your frustration" is still banned; name the actual issue instead).
+- Validate the frustration, take ownership, and lower the temperature. Do NOT get defensive, argue, justify, blame the guest, or re-litigate. One real acknowledgement, then move toward a concrete next step or resolution.
+- Stay brief and human — acknowledgement + path forward, not a wall of apology.
+- ALWAYS send the guest a reply (set "confident": true) — NEVER a silent or empty escalation when they're upset; leaving a frustrated guest with no response is the worst outcome. If the issue needs a person to actually fix it (maintenance, the host), still reply warmly that you're getting the team on it right now and will follow up — that IS the next step. This overrides the general "set confident:false when you can't fully resolve it" rule for an upset guest: acknowledge and reassure rather than going silent.
+- HARD MONEY BOUNDARY: if the message touches money, refunds, a discount, a dispute, chargebacks, or compensation, do NOT negotiate, quote, estimate, or promise any refund/credit/amount yourself. Acknowledge, de-escalate, and tell them you're escalating to the host/owner who will personally follow up — then stop. The host handles all money personally. (Money complaints are normally auto-escalated and not auto-replied; this is the boundary for any money element that still reaches you.)`;
+
+async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null, conversationId = null) {
   // Front-desk contingency detected by ANY means (single regex, fragment burst, or
   // classifier) → send the EXACT hardcoded reply, never Claude's freeform wording.
   // This catches split/fragmented requests that no single message matches.
@@ -1415,11 +1473,17 @@ async function draftReply(guestName, messageBody, propertyName, propertyId, conc
     return { confident: false, reply: '' };
   }
 
-  // Short-circuit for common questions with exact hardcoded answers
-  const hardcoded = detectHardcodedResponse(guestName, messageBody);
-  if (hardcoded) {
-    console.log(`[draft] Hardcoded match for: "${messageBody.slice(0, 60)}"`);
-    return hardcoded;
+  // Short-circuit for common questions with exact hardcoded answers — BUT skip it when the guest
+  // reads as frustrated/upset. A canned how-to is exactly the "flat canned tone" a tense guest
+  // should NOT get; let the LLM produce a de-escalating reply instead (it still has the same facts
+  // via the knowledge base / property details). Money complaints are escalated upstream and never
+  // reach here; the de-escalation guidance carries the money boundary for any that do.
+  if (!isFrustrated(messageBody)) {
+    const hardcoded = detectHardcodedResponse(guestName, messageBody);
+    if (hardcoded) {
+      console.log(`[draft] Hardcoded match for: "${messageBody.slice(0, 60)}"`);
+      return hardcoded;
+    }
   }
 
   const profileData = propertyProfiles.get(propertyId);
@@ -1471,6 +1535,7 @@ Reply style — text like a real host, not a customer-service bot (voice only; n
 - Sign off simply as "Cal" (a short "– Cal", or "Cal" on its own line). Don't repeat the same closer back-to-back.
 - Anticipate needs lightly: offer a useful related detail when it's relevant, but don't dump info or recite check-in/house rules unless asked.
 - You can see the full conversation. Never repeat a sentence you already sent. If the guest says you didn't answer, address their actual question.
+- READ THE ENTIRE CONVERSATION (including any condensed "earlier in this conversation" summary) before replying. Track every commitment, promise, price, time, arrangement, or fact either side has already stated, and make your reply fully consistent with them: never contradict, walk back, re-litigate, or re-ask something already settled, and don't re-answer something you already answered. Build on what's been said rather than restarting. If you must correct a genuine earlier mistake, acknowledge it plainly instead of pretending it didn't happen.
 - Never invent facts — all policies, times, fees, and details must come from the information above.
 - This concise, human voice OVERRIDES any flowery or overly-formal patterns in the learned host profile above.`;
 
@@ -1541,10 +1606,16 @@ ${JSON_INSTRUCTIONS}`;
   // (pre-booking) → SALES mode (win the booking); a confirmed RESERVATION → SERVICE mode.
   const modeBlock = resourceType === 'reservation' ? SERVICE_MODE_GUIDANCE : SALES_MODE_GUIDANCE;
 
+  // De-escalation layered on top of the tone mode when the guest reads as frustrated/upset.
+  // Tone only — never changes facts/policies, and money complaints stay owned by isMoneyComplaint.
+  const deescalationBlock = isFrustrated(messageBody) ? DE_ESCALATION_GUIDANCE : '';
+  if (deescalationBlock) console.log(`[draft] De-escalation mode engaged (frustrated guest) for ${resourceType || 'msg'} ${resourceId || conversationId || ''}`);
+
   // Volatile per-message content — AFTER the cache breakpoint (never cached).
   const dynamicSystem = [
     `You are now replying to ${guestFirst}.`,
     modeBlock,
+    deescalationBlock,
     parkingSection,
     restaurantSection,
     conventionSection,
@@ -1554,37 +1625,46 @@ ${JSON_INSTRUCTIONS}`;
   const systemBlocks = [{ type: 'text', text: stableSystem, cache_control: { type: 'ephemeral', ttl: '1h' } }];
   if (dynamicSystem.trim()) systemBlocks.push({ type: 'text', text: dynamicSystem });
 
-  // Conversation history: for reservation threads, pass the real prior turns so the
-  // agent sees what it already said and what the guest actually asked. Inquiries have
-  // no fetchable history (GET 405) → fall back to the legacy single-message form.
+  // Conversation history → pass the real chronological multi-turn context so the agent sees the
+  // whole thread (what it already said + what the guest asked), start-to-finish for normal threads.
+  //   reservation → fetch the thread from Hospitable (per_page 50).
+  //   inquiry     → GET /inquiries/{id}/messages is 405, so use the in-memory per-conversation
+  //                 buffer (recentMsgsByConvo: guest msgs + the bot's own buffered replies).
+  //                 Best-effort — it resets on restart, but keeps a pre-booking back-and-forth coherent.
   let promptInput = `Guest ${guestName} says: "${messageBody}"`;
-  if (resourceType === 'reservation' && resourceId) {
-    try {
-      const thread = await fetchMessagesForReservation(resourceId);
-      const { messages, priorContext } = buildThreadMessages(thread, messageBody, 12);
-      if (messages.length) {
-        promptInput = messages;
-        console.log(`[draft] Thread history: ${messages.length} turn(s) for reservation ${resourceId}`);
-      }
-
-      // Fold thread-derived facts into a NON-cached system block (per-conversation,
-      // must sit after the cache breakpoint). Two guards:
-      //  1. priorContext — leading host turns that can't lead the messages array
-      //     (Anthropic needs a user-first array). Without this, the very first thing
-      //     we sent (often the check-in details) is invisible to the model.
-      //  2. checkinAlreadySent — explicit instruction so the model never promises
-      //     check-in info that has already been delivered.
-      const threadNotes = [];
-      if (priorContext) {
-        threadNotes.push(`Messages you have ALREADY sent to this guest earlier in this thread (already covered — do NOT repeat them or contradict them):\n${priorContext}`);
-      }
-      if (checkinAlreadySent(thread)) {
-        threadNotes.push(`IMPORTANT: Check-in details (door code, Wi-Fi, building/front-desk access instructions) have ALREADY been sent to this guest in this thread. NEVER say check-in details are forthcoming, "coming soon", or that you will send them later — the guest already has them.`);
-      }
-      if (threadNotes.length) systemBlocks.push({ type: 'text', text: threadNotes.join('\n\n') });
-    } catch (e) {
-      console.warn(`[draft] thread fetch failed (${e.message}) — falling back to single message`);
+  let thread = null;
+  try {
+    if (resourceType === 'reservation' && resourceId) {
+      thread = await fetchMessagesForReservation(resourceId);
+    } else if (conversationId && recentMsgsByConvo.has(conversationId)) {
+      thread = recentMsgsByConvo.get(conversationId);
     }
+  } catch (e) {
+    console.warn(`[draft] thread fetch failed (${e.message}) — falling back to single message`);
+  }
+  if (thread && thread.length) {
+    const { messages, priorContext, olderSummary } = buildThreadMessages(thread, messageBody, 30);
+    if (messages.length) {
+      promptInput = messages;
+      console.log(`[draft] Thread history: ${messages.length} turn(s)${olderSummary ? ' + older-turn summary' : ''} for ${resourceType} ${resourceId || conversationId}`);
+    }
+    // Fold thread-derived context into a NON-cached system block (per-conversation, after the
+    // cache breakpoint). Three guards:
+    //  1. olderSummary — condensed oldest turns trimmed beyond the cap (keeps opening context).
+    //  2. priorContext — leading host turns that can't lead a user-first messages array (often the
+    //     check-in details we already sent — otherwise invisible to the model).
+    //  3. checkinAlreadySent — never re-promise check-in info already delivered.
+    const threadNotes = [];
+    if (olderSummary) {
+      threadNotes.push(`Earlier in this conversation (older turns, condensed — the conversation did NOT start with the messages below; stay consistent with this and don't contradict it):\n${olderSummary}`);
+    }
+    if (priorContext) {
+      threadNotes.push(`Messages you have ALREADY sent to this guest earlier in this thread (already covered — do NOT repeat them or contradict them):\n${priorContext}`);
+    }
+    if (checkinAlreadySent(thread)) {
+      threadNotes.push(`IMPORTANT: Check-in details (door code, Wi-Fi, building/front-desk access instructions) have ALREADY been sent to this guest in this thread. NEVER say check-in details are forthcoming, "coming soon", or that you will send them later — the guest already has them.`);
+    }
+    if (threadNotes.length) systemBlocks.push({ type: 'text', text: threadNotes.join('\n\n') });
   }
   const raw = await callClaude(systemBlocks, promptInput, 600);
 
@@ -1716,15 +1796,9 @@ app.post('/webhook/hospitable', (req, res, next) => {
 
   if (!messageBody) { console.log('[webhook] empty body — ignoring'); return; }
 
-  // Buffer recent guest messages per conversation so a request split across
-  // short messages is caught as a tight burst — even with NO booking attached.
-  if (conversationId) {
-    const buf = recentMsgsByConvo.get(conversationId) || [];
-    buf.push({ body: messageBody, sender_role: 'guest', created_at: msg.created_at || new Date().toISOString() });
-    while (buf.length > 8) buf.shift();
-    recentMsgsByConvo.set(conversationId, buf);
-    if (recentMsgsByConvo.size > 500) recentMsgsByConvo.delete(recentMsgsByConvo.keys().next().value);
-  }
+  // Buffer recent guest messages per conversation so a request split across short messages is
+  // caught as a tight burst (even with NO booking attached) AND so an inquiry thread has history.
+  if (conversationId) pushConvoMsg(conversationId, 'guest', messageBody);
   // Front-desk contingency match: this message alone, OR a tight burst of recent
   // short fragments in the same conversation. regexHit drives the fast-path; the
   // AI classifier (decideConciergeHit) is consulted only on a regex miss.
@@ -1821,12 +1895,15 @@ app.post('/webhook/hospitable', (req, res, next) => {
   }
 
   try {
-    const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId, false, replyResourceId, replyResourceType);
+    const { reply, confident } = await draftReply(guestName, messageBody, propertyName, propertyId, false, replyResourceId, replyResourceType, conversationId);
     if (!confident || !reply) {
       console.log(`[webhook] Low confidence — escalated to host, no guest reply`);
       notifyHost({ guestName, messageBody, propertyName, conversationKey: replyResourceId, resourceId: replyResourceId, resourceType: replyResourceType }).catch(console.error);
     } else {
       scheduleReply(replyResourceId, guestName, messageBody, reply, propertyName, propertyId, replyResourceType);
+      // Buffer the bot's own reply so an inquiry (no GETable history) stays a coherent two-sided
+      // thread on the next turn. Reservations re-fetch the real thread, so they don't need this.
+      if (replyResourceType === 'inquiry') pushConvoMsg(conversationId, 'host', reply);
       console.log(`[webhook] ✓ Reply scheduled via ${replyResourceType} ${replyResourceId}`);
     }
   } catch (err) {
@@ -3176,7 +3253,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 // start the server thanks to the `require.main === module` guard around app.listen.
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX, isMoneyComplaint,
-  callClaude, decideConciergeIntent,
+  callClaude, decideConciergeIntent, isFrustrated, summarizeOlderTurns,
   buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
   sendOpenPhoneSms,
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
