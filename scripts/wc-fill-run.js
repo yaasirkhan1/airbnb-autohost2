@@ -19,6 +19,10 @@ const { WC_FILL, wcActive, wcFenced, wcFloor, wcMinStay, wcLabel, wcUnitType, wc
 const ROOT = path.join(__dirname, '..');
 const CONFIRM = process.argv.includes('--confirm');
 const SEED = process.argv.includes('--seed');
+// Freeze the near-term window: the decay pass leaves any night this many days out (or closer)
+// at its current price, so the host manages the most immediate dates manually. Dates further out
+// keep decaying normally. Applies to the recurring DECAY pass only, never the one-time --seed.
+const FREEZE_WITHIN_DAYS = 7;
 const DATA = R.resolveDataDir(process.env, path.join(ROOT, 'data'));
 const SNAP_DIR = path.join(DATA, 'snapshots');
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
@@ -80,6 +84,8 @@ async function pushDays(id, rows) {
     for (let d = WC_FILL.start; d <= WC_FILL.end; d = addDays(d, 1)) {
       const cd = cal.map[d];
       if (isNightBooked(cd && cd.raw)) { console.log(`  ${d} ${wcLabel(d)}  [BOOKED — frozen]`); continue; }
+      const daysOut = daysBetween(today, d);
+      if (!SEED && daysOut <= FREEZE_WITHIN_DAYS) { console.log(`  ${d} ${wcLabel(d)}  [≤${FREEZE_WITHIN_DAYS}d out — FROZEN for manual control]`); continue; }
       const cur = cd ? cd.price : null;
       if (cur == null) { console.log(`  ${d} ${wcLabel(d)}  (no live price — skipped)`); continue; }
       const floor = wcFloor(type, d);
