@@ -33,6 +33,11 @@ const WC_FILL = {
   // tiered game/shoulder/base + weekend floors. Applies only where wcFloor is consulted
   // (the WC-fenced dates, i.e. 14–20 in this range).
   floorOverride: { start: '2026-06-13', end: '2026-06-20', value: { '1BR': 72, '2BR': 109 } },
+  // Host cut (2026-06-17): lower the per-date floors 2.5% for Jun 22–30 so the decay chases
+  // ~2.5% lower across all vacant nights in that range. Applied AFTER the tier+weekend floor,
+  // so the game/shoulder/base structure and the +15% weekend uplift are preserved. Does NOT
+  // touch Jun 21 (game) or the Jun 13–20 floorOverride. Self-lifts after 6/30 with the window.
+  floorCut: { start: '2026-06-22', end: '2026-06-30', pct: 0.025 },
 };
 
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
@@ -52,7 +57,10 @@ function wcFloor(unitType, date) {
   const o = WC_FILL.floorOverride;
   if (o && date >= o.start && date <= o.end) return o.value[unitType];
   const base = WC_FILL.floors[unitType][wcLabel(date)];
-  return isWeekend(date) ? Math.round(base * (1 + WC_FILL.weekendUpliftPct)) : base;
+  let floor = isWeekend(date) ? Math.round(base * (1 + WC_FILL.weekendUpliftPct)) : base;
+  const c = WC_FILL.floorCut;  // date-scoped 2.5% floor cut (Jun 22–30), tiers/uplift preserved
+  if (c && date >= c.start && date <= c.end) floor = Math.round(floor * (1 - c.pct));
+  return floor;
 }
 
 // Per-date min-stay: the campaign default, unless a date falls in the host's min-stay override
