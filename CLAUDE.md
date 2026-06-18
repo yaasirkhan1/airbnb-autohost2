@@ -62,6 +62,18 @@ Authorization: Bearer <API_SECRET>
 - **Confirm back** to the host exactly what registered (action, unit, date) from the endpoint's JSON response.
 - Code: `src/cleaning-override.js` (store + pure logic); merge + expiry in `sendCleaningSchedule` (server.js); tests `scripts/test-cleaning-override.js`.
 
+**One-off SMS to Veronica (the cleaner):** when the host says **"text Veronica: &lt;message&gt;"** or **"send Veronica &lt;message&gt;"**, send that exact message to her OpenPhone number via the LIVE endpoint (do NOT hunt for raw QUO creds or curl OpenPhone by hand):
+
+```
+POST https://airbnb-autohost2-production.up.railway.app/api/cleaner-message
+Authorization: Bearer <API_SECRET>
+{ "message": "<arbitrary text>" }    // alias: "text"
+```
+
+- This is a free-text message to the cleaner only (Veronica, `229-573-3899`) — NOT the host, NOT the nightly schedule. Use it for corrections/updates to a schedule already sent, or any ad-hoc note.
+- Uses the same QUO creds (`QUO_API_KEY` / `QUO_FROM_NUMBER`) as `sendCleaningSchedule`. 200 `{ok,to,status}` on send / 400 empty / 503 not configured / 502 OpenPhone failure.
+- Code: `src/cleaner-message.js` (pure sender, injectable fetch); route in server.js; tests `scripts/test-cleaner-message.js`.
+
 ---
 
 ## HOST-ADDED KNOWLEDGE FACTS — plain-English facts the host teaches the bot
