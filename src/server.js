@@ -14,6 +14,7 @@ const { parseDraftReply } = require('./draft-parse');
 const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } = require('./entry-codes');
 const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = require('./cleaning-schedule');
 const cleaningOverride = require('./cleaning-override');
+const cleanerMessage = require('./cleaner-message');
 const hostFacts = require('./host-facts');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge, classifyAccessIntent } = require('./concierge-classifier');
@@ -3014,6 +3015,20 @@ app.post('/api/cleaning-override', (req, res) => {
     deadline: action === 'add' ? (normDeadline || (priority ? '4:00PM' : null)) : undefined,
     overrides: store[targetDate],
   });
+});
+
+// POST /api/cleaner-message — fire a one-off SMS to Veronica (the cleaner) via OpenPhone, using
+// the SAME QUO creds as the nightly cleaning schedule. Body: { message: '...' } (alias: { text }).
+// Auth: the /api/ Bearer(API_SECRET) middleware above. This is the "text Veronica: ..." action —
+// no credential hunting, no raw curl. 400 empty / 503 not configured / 502 OpenPhone failure.
+app.post('/api/cleaner-message', async (req, res) => {
+  const raw = (req.body && (req.body.message ?? req.body.text)) || '';
+  const { message, error } = cleanerMessage.validateMessage(raw);
+  if (error) return res.status(400).json({ error });
+  const result = await cleanerMessage.buildCleanerSender()(message);
+  if (result.ok) return res.json({ ok: true, to: result.to, status: result.status, message });
+  const code = result.reason === 'not configured' ? 503 : 502;
+  return res.status(code).json({ ok: false, to: result.to, error: result.reason || result.error || `OpenPhone ${result.status}`, status: result.status });
 });
 
 // POST /api/knowledge — host-curated knowledge facts for the auto-responder.
