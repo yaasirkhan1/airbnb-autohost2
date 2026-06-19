@@ -15,6 +15,7 @@ const { isEntryCodeRequest, resolveEntryCode, entryCodeReply, loadEntryCodes } =
 const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = require('./cleaning-schedule');
 const cleaningOverride = require('./cleaning-override');
 const cleanerMessage = require('./cleaner-message');
+const doorCodes = require('./door-codes');
 const hostFacts = require('./host-facts');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge, classifyAccessIntent } = require('./concierge-classifier');
@@ -3015,6 +3016,38 @@ app.post('/api/cleaning-override', (req, res) => {
     deadline: action === 'add' ? (normDeadline || (priority ? '4:00PM' : null)) : undefined,
     overrides: store[targetDate],
   });
+});
+
+// POST /api/door-code — host-set per-unit door code from the phone ("set door code for 21-I to 3562").
+// Body: { unit: '21-I', code: '3562' }. Validates the unit + 4–8-digit code, persists to the volume
+// store (data/door-codes.json), and is bound per-unit so it can only ever be served for THAT unit.
+app.post('/api/door-code', (req, res) => {
+  const { unit, code } = req.body || {};
+  try {
+    const store = doorCodes.setDoorCode(doorCodes.loadStore(), unit, code);
+    doorCodes.saveStore(store);
+    const label = doorCodes.canonicalUnit(unit);
+    console.log(`[door-code] set ${label} (code updated)`);
+    res.json({ ok: true, unit: label });   // never echo the code back
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// POST /api/wifi — host-set per-unit Wi-Fi from the phone ("set wifi for 7-B to ARRIS-4A75-5G / 3G5344101127").
+// Body: { unit: '7-B', name: 'ARRIS-4A75-5G', password: '...' }. Persists to the same per-unit
+// volume store as the door codes, bound per-unit. Omit to fall back to the default rule.
+app.post('/api/wifi', (req, res) => {
+  const { unit, name, password } = req.body || {};
+  try {
+    const store = doorCodes.setWifi(doorCodes.loadStore(), unit, name, password);
+    doorCodes.saveStore(store);
+    const label = doorCodes.canonicalUnit(unit);
+    console.log(`[wifi] set ${label} → SSID ${name} (password updated)`);
+    res.json({ ok: true, unit: label, wifi_name: name });   // never echo the password back
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // POST /api/cleaner-message — fire a one-off SMS to Veronica (the cleaner) via OpenPhone, using
