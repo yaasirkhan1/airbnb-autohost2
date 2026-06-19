@@ -16,6 +16,7 @@ const { tomorrowInTZ, dateInTimeZone, classifyTurnover, isActiveReservation } = 
 const cleaningOverride = require('./cleaning-override');
 const cleanerMessage = require('./cleaner-message');
 const doorCodes = require('./door-codes');
+const checkinSweep = require('./checkin-sweep');
 const hostFacts = require('./host-facts');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge, classifyAccessIntent } = require('./concierge-classifier');
@@ -640,6 +641,34 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
         }
         console.log(`[poll/${tag}] concierge trigger OVERRIDDEN by complaint intent — routing to service reply, not the canned access flow`);
         // fall through to the generic draftReply (SERVICE-mode service recovery)
+      }
+
+      // DIRECT-QUESTION CATCH: a guest asking how to check in / for the door code gets the filled
+      // check-in instructions immediately, bound to THIS reservation's own unit — unless already
+      // sent (no double-send). A unit missing a field is NOT sent broken: host-alert + skip.
+      // Guarded so it can never break the message handler.
+      if (resourceType === 'reservation' && checkinSweep.CHECKIN_QUESTION_REGEX.test(body)) {
+        try {
+          const thread = await fetchMessagesForReservation(resourceId).catch(() => []);
+          if (!checkinSweep.wasCheckinSent(thread)) {
+            const rdata = await hospGet(`/reservations/${resourceId}?include=guest`).catch(() => null);
+            const reservation = (rdata && (rdata.data || rdata)) || {};
+            reservation.propertyId = propertyId;
+            const plan = checkinSweep.planForReservation(
+              reservation, thread, loadPropertiesMap(), doorCodes.loadStore(), process.env.HOST_NAME || 'KS');
+            if (plan.action === 'send') {
+              await sendToHospitable(resourceId, plan.message, resourceType);
+              console.log(`[checkin] direct question → sent instructions to ${plan.unit} (${guestName})`);
+              continue;
+            }
+            if (plan.action === 'skip') {
+              console.log(`[checkin] direct question from ${guestName} (${plan.unit || '?'}) — SKIP, missing ${plan.missing.join('/')}`);
+              notifyHostRaw(`⚠️ Check-in question from ${guestName} (${plan.unit || '?'}) — can't auto-send, missing ${plan.missing.join('/')}. Handle manually.`).catch(() => {});
+              continue;
+            }
+            // already_sent → fall through to the normal reply path
+          }
+        } catch (e) { console.error(`[checkin] direct-question catch error (ignored): ${e.message}`); }
       }
 
       try {
@@ -3174,6 +3203,35 @@ app.listen(PORT, () => {
     sendCleaningSchedule().catch(e => console.error('[cleaning] Cron error:', e.message));
   }, { timezone: 'America/New_York' });
   console.log('[cleaning] Cron scheduled — 9:00 PM Eastern daily');
+
+  // Morning check-in sweep — 8:00 AM Eastern (kept off the 9 AM pricing slot). For every guest
+  // arriving TODAY who hasn't already been sent check-in instructions, send them (bound to that
+  // reservation's own unit); a unit missing a field is skipped (host-alerted, never sent broken);
+  // the host gets an SMS summary. HOST_NAME sets the sign-off (defaults to "KS").
+  async function runMorningCheckinSweep(dryRun = false) {
+    const today = dateInTimeZone(new Date(), 'America/New_York');
+    const listArrivals = async (day) => {
+      const out = [];
+      for (const u of CLEANING_UNITS) {
+        const { incoming } = await getReservationsForDate(u.id, day);
+        for (const r of (incoming || [])) { r.propertyId = u.id; out.push(r); }
+      }
+      return out;
+    };
+    return checkinSweep.runSweep({
+      today, listArrivals,
+      fetchThread: (id) => fetchMessagesForReservation(id),
+      send: (id, body, type) => sendToHospitable(id, body, type),
+      smsHost: (text) => notifyHostRaw(text),
+      propsMap: loadPropertiesMap(), doorCodeStore: doorCodes.loadStore(),
+      hostName: process.env.HOST_NAME || 'KS', dryRun,
+    });
+  }
+  cron.schedule('0 8 * * *', () => {
+    console.log('[checkin] Cron fired — 8:00 AM Eastern morning sweep');
+    runMorningCheckinSweep().catch(e => console.error('[checkin] sweep error:', e.message));
+  }, { timezone: 'America/New_York' });
+  console.log('[checkin] Morning check-in sweep scheduled — 8:00 AM Eastern daily');
 
   // Daily pricing run — 9:00 AM Eastern, 23-N ONLY (--confirm --batch 30, no override-sanity).
   // Spawns the engine as a child process so its exit can't take the server down. Set
