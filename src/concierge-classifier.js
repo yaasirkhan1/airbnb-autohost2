@@ -22,6 +22,11 @@
 // No side effects on require — Claude is injected, so this is unit-testable
 // offline. server.js passes its real callClaude().
 
+// These are tiny, well-specified classifications (binary YES/no; access vs complaint) — Haiku is
+// fast/cheap and accurate here, so they don't ride the expensive default reply model. Both calls
+// are still wrapped in a regex fast-path + fail-open fallback, so a rare miss is cushioned.
+const CLASSIFIER_MODEL = 'claude-haiku-4-5';
+
 const CLASSIFIER_SYSTEM_PROMPT = `You are a strict binary classifier for an Airbnb auto-host system. The properties are units in a high-rise building that has a front desk / concierge in the lobby.
 
 PROPERTY CHECK-IN CONTEXT (important): At this building, guests cannot reach their unit on their own at check-in. The lobby front desk / concierge must clear each guest before letting them up, and the desk will only do that once the host has sent them the guest's check-in form or a supplementary authorization email. So when a guest is stuck at the desk or in the lobby, asking us to confirm/call the front desk, saying they can't get up, or asking which room they're in, it almost always means the desk does not yet have their authorization and the host needs to send it.
@@ -89,7 +94,7 @@ async function decideConcierge({ text, regexHit = false, callClaude, env = proce
   }
   // 2. AI path.
   try {
-    const rawVerdict = await withTimeout(callClaude(CLASSIFIER_SYSTEM_PROMPT, String(text || ''), 5), timeoutMs);
+    const rawVerdict = await withTimeout(callClaude(CLASSIFIER_SYSTEM_PROMPT, String(text || ''), 5, CLASSIFIER_MODEL), timeoutMs);
     return { regexHit: false, aiEnabled, aiConsulted: true, rawVerdict, fired: parseVerdict(rawVerdict), source: 'ai' };
   } catch (e) {
     // 3. fallback: never worse than regex-only (regexHit is false here → silent).
@@ -141,7 +146,7 @@ async function classifyAccessIntent({ text, callClaude, env = process.env, timeo
   if (typeof callClaude !== 'function') return { intent: 'access', raw: null, source: 'no-callClaude' };
   try {
     // 16-token budget so the longer word ("COMPLAINT") returns in full rather than truncating.
-    const raw = await withTimeout(callClaude(INTENT_SYSTEM_PROMPT, String(text || ''), 16), timeoutMs);
+    const raw = await withTimeout(callClaude(INTENT_SYSTEM_PROMPT, String(text || ''), 16, CLASSIFIER_MODEL), timeoutMs);
     return { intent: parseIntent(raw), raw, source: 'ai' };
   } catch (e) {
     return { intent: 'access', raw: `ERROR:${e.message}`, source: 'ai-fallback' };

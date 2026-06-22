@@ -1754,7 +1754,10 @@ ${JSON_INSTRUCTIONS}`;
     }
     if (threadNotes.length) systemBlocks.push({ type: 'text', text: threadNotes.join('\n\n') });
   }
-  const raw = await callClaude(systemBlocks, promptInput, 600);
+  // Guest replies run on Sonnet (quality at reasonable cost). Isolated override — REPLY_MODEL
+  // (the callClaude default) is left as-is so listing-copy generation is unaffected, and the
+  // concierge classifiers are pinned to Haiku separately.
+  const raw = await callClaude(systemBlocks, promptInput, 600, 'claude-sonnet-4-6');
 
   // Tiered parse: valid JSON envelope → use it; plain prose (no JSON) → recover it as
   // the reply; empty/refusal or malformed JSON → escalate. (Fixes the bug where any
