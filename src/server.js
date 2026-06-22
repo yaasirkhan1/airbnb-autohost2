@@ -18,6 +18,7 @@ const cleanerMessage = require('./cleaner-message');
 const doorCodes = require('./door-codes');
 const checkinSweep = require('./checkin-sweep');
 const hostFacts = require('./host-facts');
+const guestNameLib = require('./guest-name');
 const { fragmentBurst, routeAction } = require('./concierge-window');
 const { decideConcierge, classifyAccessIntent } = require('./concierge-classifier');
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms, conciergeSms } = require('./concierge-email');
@@ -271,6 +272,21 @@ async function hospPut(apiPath, body) {
     throw new Error(`Hospitable ${res.status} on PUT ${apiPath}: ${text}`);
   }
   return res.json().catch(() => ({}));
+}
+
+// Best-effort fetch of the booking/inquiry GUEST object (the reliable guest identity, unlike a
+// per-message sender which can be the host on inquiries). Returns the guest object or null; never
+// throws (a name lookup must never break message handling). Used for safe greeting-name resolution.
+async function fetchGuestObject(resourceType, resourceId) {
+  if (!resourceId) return null;
+  const seg = resourceType === 'inquiry' ? 'inquiries' : 'reservations';
+  try {
+    const d = await hospGet(`/${seg}/${resourceId}?include=guest`);
+    return ((d && (d.data || d)) || {}).guest || null;
+  } catch (e) {
+    console.log(`[guest-name] could not fetch guest for ${seg}/${resourceId}: ${e.message}`);
+    return null;
+  }
 }
 
 // ─── History learning ─────────────────────────────────────────────────────────
@@ -593,9 +609,15 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
       const body = (msg.body || '').trim();
       if (!body) continue;
 
-      const guestName = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
+      // Safe guest-name resolution: prefer the real GUEST object, fall back to the message sender
+      // ONLY if it isn't the host/account name, else a neutral no-name greeting — NEVER the host's
+      // name (see guest-name.js; the "greet Jamie as Yaasir on an inquiry" bug).
+      const senderName = msg.sender?.full_name || msg.sender?.first_name;
+      const hostNames = guestNameLib.hostNameSet({ hostEnvName: process.env.HOST_NAME, messages });
+      const guestObj = await fetchGuestObject(resourceType, resourceId);
+      const guestName = guestNameLib.resolveGuestName({ guest: guestObj, senderName, hostNames });
       const tag = resourceType.slice(0, 3);
-      console.log(`[poll/${tag}] 📨 "${guestName}" property="${propertyName}" (${resourceId}): "${body.slice(0, 80)}"`);
+      console.log(`[poll/${tag}] 📨 "${guestName || 'guest'}" property="${propertyName}" (${resourceId}): "${body.slice(0, 80)}"`);
       console.log(`[poll/${tag}] using profile: ${propertyProfiles.has(propertyId)}`);
 
       // Front-desk contingency detection — this message OR a tight burst of recent
@@ -1035,7 +1057,9 @@ async function sendOpenPhoneSms(to, text) {
 // resolved and stops alerts. Without a conversationKey (e.g. manual /api/notify),
 // falls back to the original always-send behavior.
 async function notifyHost({ guestName, messageBody, propertyName, conversationKey, resourceId, resourceType = 'reservation' }) {
-  const firstAlertText = `⚠ AutoHost: ${guestName} at ${propertyName} needs your reply. Message: "${messageBody.slice(0, 100)}"`;
+  // guestName may be null (no trustworthy guest name) — show a neutral label in host alerts.
+  const who = guestName || 'a guest';
+  const firstAlertText = `⚠ AutoHost: ${who} at ${propertyName} needs your reply. Message: "${messageBody.slice(0, 100)}"`;
   if (!conversationKey) return notifyHostRaw(firstAlertText);
 
   let hostReplied = false;
@@ -1057,7 +1081,7 @@ async function notifyHost({ guestName, messageBody, propertyName, conversationKe
     case 'first':
       return notifyHostRaw(firstAlertText);
     case 'reminder':
-      return notifyHostRaw(`⚠ AutoHost: ${guestName} — ${count} new message${count === 1 ? '' : 's'}, still needs reply`);
+      return notifyHostRaw(`⚠ AutoHost: ${who} — ${count} new message${count === 1 ? '' : 's'}, still needs reply`);
     case 'resolved':
       console.log(`[notify] host already replied — ${conversationKey} resolved, no alert sent`);
       return;
@@ -1837,11 +1861,19 @@ app.post('/webhook/hospitable', (req, res, next) => {
 
   const conversationId = msg.conversation_id;
   const messageBody    = (msg.body || '').trim();
-  const guestName      = msg.sender?.full_name || msg.sender?.first_name || 'Guest';
   const reservationId  = msg.reservation_id || null;
   const inquiryId      = msg.inquiry_id     || null;
 
-  console.log(`[webhook] ✉ from="${guestName}" sender_role="${senderRole}" reservation="${reservationId}" inquiry="${inquiryId}" convo="${conversationId}"`);
+  // Safe guest-name resolution (twin of the poller path): prefer the real GUEST object, fall back
+  // to the message sender only if it isn't the host/account name, else neutral — NEVER the host's
+  // name. The webhook has no thread array here, so host names come from HOST_NAME; the guest-object
+  // fetch is the primary guard. See guest-name.js.
+  const senderName     = msg.sender?.full_name || msg.sender?.first_name;
+  const hostNames      = guestNameLib.hostNameSet({ hostEnvName: process.env.HOST_NAME });
+  const guestObj       = await fetchGuestObject(reservationId ? 'reservation' : 'inquiry', reservationId || inquiryId);
+  const guestName      = guestNameLib.resolveGuestName({ guest: guestObj, senderName, hostNames });
+
+  console.log(`[webhook] ✉ from="${guestName || 'guest'}" sender_role="${senderRole}" reservation="${reservationId}" inquiry="${inquiryId}" convo="${conversationId}"`);
   console.log(`[webhook] body: "${messageBody.slice(0, 120)}"`);
 
   if (!messageBody) { console.log('[webhook] empty body — ignoring'); return; }
