@@ -17,6 +17,7 @@ const cleaningOverride = require('./cleaning-override');
 const cleanerMessage = require('./cleaner-message');
 const doorCodes = require('./door-codes');
 const checkinSweep = require('./checkin-sweep');
+const checkinTemplate = require('./checkin-template');
 const hostFacts = require('./host-facts');
 const guestNameLib = require('./guest-name');
 const { fragmentBurst, routeAction } = require('./concierge-window');
@@ -24,6 +25,11 @@ const { decideConcierge, classifyAccessIntent } = require('./concierge-classifie
 const { buildConciergeEmail, conciergeGuestReply, conciergeHardcodedReply, resolveConciergeReply, conciergeSentSms, conciergeFailedSms, conciergeSms } = require('./concierge-email');
 const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-properties');
 const { resolveReplyTarget } = require('./reply-target');
+const pricingAdjust = require('./pricing-adjust');
+const pricingFreeze = require('./pricing-freeze');
+const { isNightBooked } = require('./pricing-guards');
+const telegramBot = require('./telegram-bot');
+const telegramIntent = require('./telegram-intent');
 const { loadKnowledgeBase } = require('./knowledge-base');
 const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
 const { loadRestaurantKB, isRestaurantQuestion, buildRestaurantSection } = require('./restaurant-knowledge');
@@ -2292,6 +2298,197 @@ app.put('/api/pricing', async (req, res) => {
   res.json({ updated: results.filter(r => r.ok).length, total: results.length, results });
 });
 
+// ─── Manual % price adjustment + manual decay-freeze (Telegram ops controls) ───
+// Canonical unit label ↔ Hospitable property id (the 7 managed units).
+const UNIT_LABEL_TO_ID = {
+  '4-L':  'bbe43523-c42a-46b0-8235-7ad08ae990c9',
+  '7-B':  '1af8fdde-58ee-426e-8374-6530397347e8',
+  '18-A': '5a8cafc2-baa9-4fdb-b6dc-773bfcfb75bc',
+  '21-D': '80c21aac-00eb-49af-9094-6792839ff5a4',
+  '21-I': '7b7fda8b-e1d8-460f-8143-59a1a2b4d81c',
+  '23-N': '283977a3-3af3-4d90-8d95-b418a3014d90',
+  '24-L': '3e702102-a219-4c18-9f88-3a4d1ceb3825',
+};
+const ID_TO_LABEL = Object.fromEntries(Object.entries(UNIT_LABEL_TO_ID).map(([l, id]) => [id, l]));
+
+// 'all'/undefined → every managed unit; an array of labels (or ids) → resolved ids.
+function resolveUnitIds(units) {
+  if (!units || units === 'all') return [...ATLANTA_ALL_IDS];
+  const list = Array.isArray(units) ? units : [units];
+  return list.map(u => UNIT_LABEL_TO_ID[telegramIntent.canonUnit(u) || ''] || (ID_TO_LABEL[u] ? u : null)).filter(Boolean);
+}
+
+// Live calendar → [{date, current(USD), booked}] for a date range. Fail-closed: an unparseable
+// day or unknown availability is treated as booked (never repriced).
+async function fetchCalendarEntries(id, start, end) {
+  const calData = await hospGet(`/properties/${id}/calendar?start_date=${start}&end_date=${end}`);
+  const rv = calData && calData.data;
+  const days = Array.isArray(rv && rv.days) ? rv.days : Array.isArray(calData) ? calData : Array.isArray(rv) ? rv : [];
+  return days.map(d => ({
+    date:    d.date || d.Date || null,
+    current: d.price && d.price.amount != null ? Math.round(d.price.amount / 100)
+           : typeof d.price === 'number' ? Math.round(d.price / 100) : null,
+    booked:  isNightBooked(d),
+  })).filter(e => e.date);
+}
+
+// POST /api/pricing/adjust — lower/raise prices by a percentage over a date range, optionally
+// per-unit or all units. Reads each night's live price, applies pct, clamps to the manual
+// floor/ceiling, pushes, and snapshots the prior prices so it's reversible. Booked / no-price
+// nights are left alone. Body: { pct, start, end, units? }.
+app.post('/api/pricing/adjust', async (req, res) => {
+  const { pct, start, end, units } = req.body || {};
+  if (typeof pct !== 'number' || !isFinite(pct) || pct === 0) return res.status(400).json({ error: 'pct (signed nonzero number) required' });
+  const ymd = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  if (!ymd(start) || !ymd(end)) return res.status(400).json({ error: 'start and end (YYYY-MM-DD) required' });
+  if (end < start) return res.status(400).json({ error: 'end is before start' });
+  const targetIds = resolveUnitIds(units);
+  if (!targetIds.length) return res.status(400).json({ error: 'no valid units' });
+
+  const dates = pricingAdjust.dateRange(start, end);
+  const results = [], snapUnits = [];
+  for (const id of targetIds) {
+    try {
+      const entries = await fetchCalendarEntries(id, start, end);
+      const type = id === ATLANTA_2BR_ID ? '2br' : '1br';
+      const bounds = { floor: HARD_MIN_PRICE[type], ceiling: PRICE_RULES[type].ceiling };
+      const byDate = new Map(entries.map(e => [e.date, e]));
+      const ordered = dates.map(d => byDate.get(d) || { date: d, current: null, booked: true });
+      const { rows, snapshot, skipped } = pricingAdjust.buildAdjustRows(ordered, pct, bounds);
+      if (rows.length) {
+        const calDays = rows.map(r => ({ date: r.date, price: { amount: Math.round(r.to * 100) } }));
+        await hospPut(`/properties/${id}/calendar`, calDays);
+        snapUnits.push({ id, snapshot });
+      }
+      results.push({ id, unit: ID_TO_LABEL[id] || id, changed: rows.length, rows, skipped: skipped.length });
+      await new Promise(r => setTimeout(r, 200));
+    } catch (e) {
+      results.push({ id, unit: ID_TO_LABEL[id] || id, error: e.message });
+    }
+  }
+  let recordId = null;
+  if (snapUnits.length) {
+    const store = pricingAdjust.recordAdjustment(pricingAdjust.loadStore(), { pct, start, end, units: snapUnits });
+    pricingAdjust.saveStore(store);
+    recordId = store[0].id;
+  }
+  const totalChanged = results.reduce((n, r) => n + (r.changed || 0), 0);
+  console.log(`[pricing-adjust] ${pct > 0 ? '+' : ''}${pct}% ${start}..${end} → ${totalChanged} night(s) across ${results.length} unit(s) | revert id ${recordId || 'n/a'}`);
+  res.json({ ok: true, pct, start, end, totalChanged, recordId, results });
+});
+
+// POST /api/pricing/adjust/revert — undo the most recent adjustment (or a specific { id }) by
+// pushing the snapshotted prior prices back.
+app.post('/api/pricing/adjust/revert', async (req, res) => {
+  const store = pricingAdjust.loadStore();
+  const { id } = req.body || {};
+  const rec = id ? store.find(r => r.id === id) : store[0];
+  if (!rec) return res.status(404).json({ error: 'no adjustment on record to revert' });
+  const results = [];
+  for (const u of (rec.units || [])) {
+    try {
+      const calDays = (u.snapshot || []).map(s => ({ date: s.date, price: { amount: Math.round(s.price * 100) } }));
+      if (calDays.length) await hospPut(`/properties/${u.id}/calendar`, calDays);
+      results.push({ id: u.id, unit: ID_TO_LABEL[u.id] || u.id, reverted: calDays.length });
+      await new Promise(r => setTimeout(r, 200));
+    } catch (e) {
+      results.push({ id: u.id, unit: ID_TO_LABEL[u.id] || u.id, error: e.message });
+    }
+  }
+  pricingAdjust.saveStore(store.filter(r => r.id !== rec.id));
+  console.log(`[pricing-adjust] reverted ${rec.id} (${rec.pct}% ${rec.start}..${rec.end})`);
+  res.json({ ok: true, recordId: rec.id, results });
+});
+
+// GET /api/pricing/decay-freeze — current manual decay-freeze window.
+app.get('/api/pricing/decay-freeze', (_req, res) => {
+  const store = pricingFreeze.loadStore();
+  const today = dateInTimeZone(new Date(), 'America/New_York');
+  res.json({ ok: true, active: !!store.days, days: store.days || 0, window: pricingFreeze.freezeWindow(today, store), setAt: store.setAt || null });
+});
+
+// POST /api/pricing/decay-freeze — freeze (enable:true, days N) or unfreeze (enable:false) the
+// rolling decay-freeze window. While frozen, the engine + all decay passes skip those nights so
+// hand-set prices stick. Reversible: clearing it restores normal automation, no price written.
+app.post('/api/pricing/decay-freeze', (req, res) => {
+  const { enable, days } = req.body || {};
+  try {
+    if (enable === false) {
+      pricingFreeze.saveStore(pricingFreeze.clearFreeze());
+      console.log('[decay-freeze] cleared — automation resumed');
+      return res.json({ ok: true, active: false });
+    }
+    const store = pricingFreeze.setFreeze(days == null ? 7 : days);
+    pricingFreeze.saveStore(store);
+    const today = dateInTimeZone(new Date(), 'America/New_York');
+    const window = pricingFreeze.freezeWindow(today, store);
+    console.log(`[decay-freeze] set ${store.days} day(s) → window ${window.start}..${window.end}`);
+    res.json({ ok: true, active: true, days: store.days, window });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+
+// ─── Telegram ops bot — internal helpers (parse / compose / resolve / call endpoints) ─────────
+// Adapter: the intent parser calls callClaude(model, system, user); server's callClaude is
+// (system, user, maxTokens, model). Parsing uses Haiku (fast/cheap) — passed by the parser.
+const callClaudeForBot = (model, system, user) => callClaude(system, user, 700, model);
+
+// Call one of THIS service's own authed endpoints over localhost with the API_SECRET bearer, so
+// the bot reuses the exact validated paths (cleaning-override, pricing/adjust, etc.).
+async function callLocalApi(method, apiPath, body) {
+  const r = await fetch(`http://127.0.0.1:${PORT}${apiPath}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_SECRET}` },
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  const text = await r.text();
+  let json; try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  return { ok: r.ok, status: r.status, json };
+}
+
+const reservationGuestName = (r) => (r && r.guest && (r.guest.full_name || r.guest.first_name)) || '';
+const reservationCheckin = (r) => String((r && (r.check_in || r.checkin || r.arrival_date || r.start_date)) || '').slice(0, 10);
+
+// All reservations ARRIVING today across the 7 units (for front-desk form + check-in resend).
+async function listArrivalsToday(today) {
+  const out = [];
+  for (const [label, id] of Object.entries(UNIT_LABEL_TO_ID)) {
+    const { incoming } = await getReservationsForDate(id, today);
+    for (const r of (incoming || [])) out.push({ r, id, label });
+  }
+  return out;
+}
+
+// Resolve a guest's active reservation thread by (partial) name across all units.
+// → { status:'one'|'none'|'many', guest?, candidates? }.
+async function resolveGuestThread(name) {
+  const q = String(name || '').trim().toLowerCase();
+  const matches = [];
+  for (const [label, id] of Object.entries(UNIT_LABEL_TO_ID)) {
+    let reservations = [];
+    try { reservations = parseReservations(await hospGet(`/reservations?properties[]=${id}&per_page=40&include=guest`)).filter(isActiveReservation); } catch { /* skip unit on error */ }
+    for (const r of reservations) {
+      const gn = reservationGuestName(r);
+      if (gn && gn.toLowerCase().includes(q)) {
+        const ci = reservationCheckin(r);
+        matches.push({ label: `${gn} — ${label}${ci ? `, in ${ci}` : ''}`, name: gn, id: r.id, resourceType: 'reservation', propertyId: id, propertyName: label });
+      }
+    }
+  }
+  if (matches.length === 1) return { status: 'one', guest: matches[0] };
+  if (matches.length === 0) return { status: 'none' };
+  return { status: 'many', candidates: matches };
+}
+
+// Compose a guest message in the host's voice (Sonnet — quality over speed).
+const GUEST_COMPOSE_SYSTEM = `You are Cal, the warm, attentive host of upscale downtown Atlanta Airbnb apartments. Write ONE message to a guest in the host's voice: warm and genuinely friendly, courteous customer-service tone, natural pleasantries (greet them by first name, a kind closing), clear and concise. Honor our service protocols (helpful, proactive, take ownership, never rude or terse). Output ONLY the message text — no preamble, no quotes, no subject line. Sign off as "Cal".`;
+async function composeGuestMessage({ guest, gist }) {
+  const user = `Guest first name: ${(guest.name || 'there').split(/\s+/)[0]}\nWhat I want to convey to them: ${gist}\n\nWrite the message.`;
+  const text = await callClaude(GUEST_COMPOSE_SYSTEM, user, 500, 'claude-sonnet-4-6');
+  return String(text || '').trim();
+}
 
 app.post('/api/notify', async (req, res) => {
   const { guestName = 'Unknown', messageBody = '', propertyName = 'Unknown', draftedReply = '' } = req.body;
@@ -3291,6 +3488,86 @@ app.listen(PORT, () => {
     }
     console.log('[wc-fill] World Cup fill decay scheduled — 9:00 AM / 3:00 PM / 7:00 PM Eastern (Jun 14–26, self-lifting)');
   }
+
+  // ─── Telegram ops bot — long-poll, OWNER-LOCKED, folded into this service ───────────────────
+  // Plain-English host commands → Haiku parse → existing authed endpoints/flows. Guest messages +
+  // pricing changes draft/echo and fire only on "yes"; everything else fires immediately. Only the
+  // numeric TELEGRAM_OWNER_ID is ever answered. No public route — long-poll out to Telegram.
+  (function startTelegramOpsBot() {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const ownerId = process.env.TELEGRAM_OWNER_ID;
+    const today = () => dateInTimeZone(new Date(), 'America/New_York');
+
+    const handlers = {
+      // ── Immediate (fire, then confirm) ──
+      cleaning_override: async (intent) => {
+        const lines = [];
+        for (const op of intent.ops) {
+          const { ok, json } = await callLocalApi('POST', '/api/cleaning-override', { action: op.op, unit: op.unit, date: op.date, priority: op.urgent, deadline: op.deadline });
+          if (ok) lines.push(`${op.op === 'add' ? '➕' : '➖'} ${json.unit} ${op.op === 'add' ? 'added to' : 'removed from'} cleaning ${json.date}${json.priority ? ` ⚡ urgent (ready by ${json.deadline})` : ''}`);
+          else lines.push(`⚠️ ${op.unit}: ${json.error || 'failed'}`);
+        }
+        return lines.join('\n');
+      },
+      cleaner_message: async (intent) => {
+        const { ok, json } = await callLocalApi('POST', '/api/cleaner-message', { message: intent.message });
+        return ok ? `✅ Texted Veronica: “${intent.message}”` : `⚠️ Couldn't text Veronica: ${json.error || 'failed'}`;
+      },
+      checkin_status: async () => {
+        const plan = await runMorningCheckinSweep(true); // DRY-RUN — sends nothing
+        return `🏨 Check-in status ${today()}:\n${plan.summary}`;
+      },
+      checkin_resend: async (intent) => {
+        const arrivals = await listArrivalsToday(today());
+        const label = telegramIntent.canonUnit(intent.target);
+        const q = intent.target.toLowerCase();
+        const cands = label ? arrivals.filter(a => a.label === label) : arrivals.filter(a => reservationGuestName(a.r).toLowerCase().includes(q));
+        if (cands.length === 0) return `No arrival today matching “${intent.target}”. (Resend only covers guests arriving today.)`;
+        if (cands.length > 1) return `More than one arrival matches “${intent.target}”: ${cands.map(c => `${reservationGuestName(c.r)} (${c.label})`).join(', ')}. Which one?`;
+        const { r, label: unitLabel } = cands[0];
+        const { fields, missing } = checkinTemplate.resolveCheckin(r, loadPropertiesMap(), doorCodes.loadStore(), { hostName: process.env.HOST_NAME || 'KS' });
+        if (missing.length) return `⚠️ Can't resend — ${unitLabel} is missing ${missing.join(', ')}. Handle manually.`;
+        await sendToHospitable(r.id, checkinTemplate.renderCheckinInstructions(fields), 'reservation');
+        return `✅ Re-sent check-in instructions to ${reservationGuestName(r) || 'guest'} (${unitLabel}).`;
+      },
+      frontdesk_form: async (intent) => {
+        const arrivals = await listArrivalsToday(today());
+        const cands = arrivals.filter(a => reservationGuestName(a.r).toLowerCase().includes(intent.name.toLowerCase()));
+        if (cands.length === 0) return `No arrival today matching “${intent.name}”. The front-desk form only fires for guests arriving today.`;
+        if (cands.length > 1) return `More than one arrival matches “${intent.name}” today: ${cands.map(c => `${reservationGuestName(c.r)} (${c.label})`).join(', ')}. Which one?`;
+        const { r, id, label } = cands[0];
+        await runConciergeContingency({ guestName: reservationGuestName(r) || 'Guest', propertyId: id, resourceId: r.id, resourceType: 'reservation', propertyName: label, context: 'telegram-frontdesk' });
+        return `✅ Front-desk form sent for ${reservationGuestName(r) || 'guest'} (${label}) — concierge email + desk SMS fired.`;
+      },
+      // ── Confirmed (fired by executePending after "yes") ──
+      guest_message_send: async ({ guest, text }) => {
+        const r = await sendToHospitable(guest.id, text, guest.resourceType || 'reservation');
+        if (r && r.paused) return `⏸ AUTOSEND is off — message NOT sent.`;
+        return `✅ Sent to ${guest.name} (${guest.propertyName}).`;
+      },
+      pricing_adjust: async (intent) => {
+        const { ok, json } = await callLocalApi('POST', '/api/pricing/adjust', { pct: intent.pct, start: intent.start, end: intent.end, units: intent.units });
+        if (!ok) return `⚠️ Price adjust failed: ${json.error || 'error'}`;
+        return `✅ ${intent.pct > 0 ? 'Raised' : 'Lowered'} prices ${Math.abs(intent.pct)}% ${intent.start}→${intent.end}: ${json.totalChanged} night(s) changed. To undo: "revert last price change" (id ${json.recordId}).`;
+      },
+      pricing_decay_freeze: async (intent) => {
+        const { ok, json } = await callLocalApi('POST', '/api/pricing/decay-freeze', { enable: intent.enable, days: intent.days });
+        if (!ok) return `⚠️ Decay-freeze failed: ${json.error || 'error'}`;
+        return intent.enable
+          ? `✅ Decay frozen for ${json.days} day(s) (${json.window.start}→${json.window.end}). Set prices by hand; automation won't touch those nights.`
+          : `✅ Decay turned back ON — automation resumed.`;
+      },
+    };
+
+    telegramBot.start({
+      token, ownerId, log: console,
+      pending: new Map(),
+      parse: (text) => telegramIntent.parseIntent({ text, callClaude: callClaudeForBot, today: today() }),
+      compose: composeGuestMessage,
+      resolveGuest: resolveGuestThread,
+      handlers,
+    });
+  })();
 });
 }
 

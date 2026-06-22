@@ -21,6 +21,7 @@ const { computeNight } = require('../src/pricing-engine');
 const { isCalendarUsable, isNightBooked, isPushable, etToday, runSanityCheck } = require('../src/pricing-guards');
 const { isDecayFenced } = require('../src/pricing-decay');
 const { wcFenced } = require('../src/wc-fill');
+const { loadStore: loadFreeze, isManualFreeze } = require('../src/pricing-freeze');
 const R = require('../src/pricing-resilience');
 const config = require('../src/pricing-config.json');
 
@@ -236,6 +237,7 @@ async function doRollback(args) {
   }
 
   const today = etToday(); // America/New_York, not UTC — evening runs keep the right lead-time
+  const freeze = loadFreeze(); // host's manual decay-freeze window (rolling N days from today)
   const start = args.start || today;
   const end = args.end || addDays(start, args.days - 1);
   const unitLabels = args.units || Object.keys(config.units);
@@ -283,6 +285,13 @@ async function doRollback(args) {
       // 9/15/19 ET). Engine skips so it never reverts the fill prices. Self-lifting after Jun 26.
       if (wcFenced(date)) {
         console.log(`  ${date} ${dow}  $${cur ?? '?'}  [FENCED — WC fill campaign, engine skips]`);
+        totalFenced++;
+        continue;
+      }
+      // MANUAL DECAY-FREEZE: the host froze automation for a rolling window from today so they can
+      // set these nights by hand — engine leaves them exactly as-is (date-scoped, self-lifting).
+      if (isManualFreeze(date, today, freeze)) {
+        console.log(`  ${date} ${dow}  $${cur ?? '?'}  [FROZEN — manual decay-freeze, engine skips]`);
         totalFenced++;
         continue;
       }

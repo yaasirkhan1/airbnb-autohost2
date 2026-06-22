@@ -13,6 +13,7 @@ const R = require('../src/pricing-resilience');
 const config = require('../src/pricing-config.json');
 const { DECAY_CAMPAIGNS, decayStep } = require('../src/pricing-decay');
 const { isNightBooked, isCalendarUsable, etToday } = require('../src/pricing-guards');
+const { loadStore: loadFreeze, isManualFreeze } = require('../src/pricing-freeze');
 
 const ROOT = path.join(__dirname, '..');
 const CONFIRM = process.argv.includes('--confirm');
@@ -57,6 +58,7 @@ async function pushDays(id, rows) {
 
 (async () => {
   const today = etToday(); // America/New_York
+  const freeze = loadFreeze(); // host's manual decay-freeze window (rolling N days from today)
   console.log(`VACANCY DECAY — ${CONFIRM ? '🔴 CONFIRM' : '🟢 DRY-RUN'} | today=${today} | ${DECAY_CAMPAIGNS.length} campaign(s)`);
   let totalPushed = 0;
 
@@ -80,6 +82,7 @@ async function pushDays(id, rows) {
         const cd = cal.map[d];
         const booked = isNightBooked(cd && cd.raw);   // unknown/missing → BOOKED (fail-closed)
         const cur = cd ? cd.price : null;
+        if (isManualFreeze(d, today, freeze)) { console.log(`  ${d}  $${cur ?? '?'}  [FROZEN — manual decay-freeze, skipped]`); continue; }
         if (booked) { console.log(`  ${d}  $${cur ?? '?'}  [BOOKED — frozen, skipped]`); continue; }
         if (cur == null) { console.log(`  ${d}  (no live price — skipped)`); continue; }
         const next = decayStep(cur, c);

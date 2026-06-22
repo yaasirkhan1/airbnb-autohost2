@@ -98,6 +98,35 @@ Authorization: Bearer <API_SECRET>
 
 ---
 
+## TELEGRAM OPS BOT — run ops in plain English from your phone
+
+A long-poll Telegram bot **folded into this service** (boots with the crons in server.js; no public route). Plain-English message → **Haiku** intent parse → mapped to the right action → existing authed endpoint/flow → reply. Guest-message composition uses **Sonnet** for quality.
+
+**HARD owner lock:** the bot answers ONLY the numeric `TELEGRAM_OWNER_ID`. Every other sender id is ignored entirely — no reply, no parse, no action (it can move live prices and message guests). Enable by setting Railway env `TELEGRAM_BOT_TOKEN` + `TELEGRAM_OWNER_ID`; unset → the bot logs `[telegram] disabled` and stays off.
+
+**Fire immediately, then confirm what was done:**
+- **Cleaning overrides** — "take 24-L off cleaning tomorrow and add 21-I urgent, ready by 4pm" → `/api/cleaning-override` (one call per op).
+- **Cleaner SMS** — "text Veronica: \<msg\>" → `/api/cleaner-message`.
+- **Check-in** — "checkin status today" → dry-run morning-sweep summary; "resend checkin to \<guest|unit\>" → force-resend instructions (today's arrivals only).
+- **Front-desk form** — "send front desk form for \<name\>" → resolves the name against TODAY's arrivals; exactly one match fires the concierge/front-desk contingency, zero/multiple asks which reservation.
+
+**Draft/echo, fire only on "yes" / "send":**
+- **Guest messages** — "tell \<guest\> \<gist\>" → Sonnet composes in the host voice, echoes the final text, sends to that guest's thread only after "yes".
+- **Pricing** — "lower prices June 20-29 5%" / "turn off decay up to 7 days out" → echoes the exact interpreted change, applies only after "yes".
+
+A command that doesn't parse confidently → the bot asks to clarify (never fires an ambiguous action). While a confirmation is pending, only yes/no are accepted.
+
+- Code: `src/telegram-bot.js` (owner lock + dispatch + long-poll), `src/telegram-intent.js` (Haiku parse + normalize), `src/telegram-actions.js` (confirm rules). Tests `scripts/test-telegram-bot.js` / `scripts/test-telegram-intent.js`; dry-run transcript `scripts/telegram-dryrun.js`.
+
+---
+
+## PRICING — manual % adjustment + decay freeze (Telegram-driven; also direct endpoints)
+
+- **`POST /api/pricing/adjust`** `{ pct, start, end, units? }` — reads each night's live price, applies the signed % (lower 5% → `pct:-5`), clamps to the manual floor/ceiling (`HARD_MIN_PRICE` … ceiling), pushes; **booked / no-price nights skipped**; prior prices snapshotted to `data/pricing-adjustments.json`. `units` omitted/`"all"` → all 7 units, else an array of labels. Reversible via **`POST /api/pricing/adjust/revert`** `{ id? }` (most recent when no id).
+- **`POST /api/pricing/decay-freeze`** `{ enable, days }` — freeze (`enable:true`, default `days:7`) or unfreeze (`enable:false`) automated decay for a rolling window `[today, today+N]`. While frozen, the daily engine AND every decay / wc-fill pass SKIP those nights so hand-set prices stick. **`GET /api/pricing/decay-freeze`** returns the active window. Self-lifting (date-scoped) + reversible; only skips automation, never writes a price. Store `data/pricing-freeze.json`. Code `src/pricing-adjust.js` / `src/pricing-freeze.js`; wired into `scripts/{pricing-engine-run,decay-run,wc-fill-run}.js`.
+
+---
+
 ## RESPONDER TONE — two modes (sales vs service)
 
 The guest auto-responder (`draftReply`) runs the **brief, answer-first, human voice** (signed "Cal", no scripted empathy), **plus** a per-message tone mode selected by `resourceType` (`SALES_MODE_GUIDANCE` / `SERVICE_MODE_GUIDANCE` injected into the dynamic system block). **Tone only — never overrides facts, prices, policies, or any factual guardrail.**
@@ -205,7 +234,7 @@ These bypass Claude entirely. Patterns are matched case-insensitively against th
 | OpenPhone (QUO)  | SMS host when Claude is not confident    | `QUO_API_KEY`, `QUO_FROM_NUMBER`, `NOTIFY_PHONE`         |
 | Nodemailer/SMTP  | Fallback email (if Resend not set)       | `GMAIL_USER`, `GMAIL_APP_PASSWORD`                       |
 
-Other relevant env vars: `HOST_NAME`, `HOST_TONE`, `CHECKIN_TIME`, `CHECKOUT_TIME`, `HOUSE_RULES`, `REPLY_DELAY_MINUTES` (default 5), `AUTOSEND` (default true), `CONCIERGE_EMAIL_TO` (default `300ptconcierge@gmail.com`), `DATA_DIR`.
+Other relevant env vars: `HOST_NAME`, `HOST_TONE`, `CHECKIN_TIME`, `CHECKOUT_TIME`, `HOUSE_RULES`, `REPLY_DELAY_MINUTES` (default 5), `AUTOSEND` (default true), `CONCIERGE_EMAIL_TO` (default `300ptconcierge@gmail.com`), `DATA_DIR`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID` (ops bot — unset disables it).
 
 ---
 
@@ -238,6 +267,10 @@ All `/api/*` endpoints require `Authorization: Bearer <API_SECRET>` header.
 | GET    | `/api/pricing/engine`           | View pricing engine state — current prices, last run, change log |
 | GET    | `/api/pricing`                  | View per-property pricing state                              |
 | PUT    | `/api/pricing`                  | Manually set price for a property                            |
+| POST   | `/api/pricing/adjust`           | Manual % price change over a date range (per-unit/all), clamped + reversible |
+| POST   | `/api/pricing/adjust/revert`    | Undo the most recent (or a specific `{id}`) manual % adjustment from its snapshot |
+| GET    | `/api/pricing/decay-freeze`     | View the manual decay-freeze window                          |
+| POST   | `/api/pricing/decay-freeze`     | Freeze/unfreeze decay for a rolling N-day window from today  |
 | GET    | `/api/queue`                    | View pending reply queue                                     |
 | POST   | `/api/cancel/:id`               | Cancel a queued reply                                        |
 | POST   | `/api/edit/:id`                 | Edit a queued reply before it sends                          |

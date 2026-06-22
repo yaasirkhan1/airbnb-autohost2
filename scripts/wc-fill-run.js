@@ -15,6 +15,7 @@ const R = require('../src/pricing-resilience');
 const config = require('../src/pricing-config.json');
 const { isNightBooked, isCalendarUsable, etToday } = require('../src/pricing-guards');
 const { WC_FILL, wcActive, wcFenced, wcFloor, wcMinStay, wcLabel, wcUnitType, wcSeed, wcDecayTarget } = require('../src/wc-fill');
+const { loadStore: loadFreeze, isManualFreeze } = require('../src/pricing-freeze');
 
 const ROOT = path.join(__dirname, '..');
 const CONFIRM = process.argv.includes('--confirm');
@@ -67,6 +68,7 @@ async function pushDays(id, rows) {
 
 (async () => {
   const today = etToday();
+  const freeze = loadFreeze(); // host's manual decay-freeze window (rolling N days from today)
   const etHour = etHourNow();
   console.log(`WC FILL — ${SEED ? 'SEED (−7%)' : 'DECAY'} ${CONFIRM ? '🔴 CONFIRM' : '🟢 DRY-RUN'} | today=${today} | etHour=${etHour}`);
   if (!wcActive()) { console.log('campaign INACTIVE (kill switch) — no-op'); return; }
@@ -84,6 +86,7 @@ async function pushDays(id, rows) {
     for (let d = WC_FILL.start; d <= WC_FILL.end; d = addDays(d, 1)) {
       const cd = cal.map[d];
       if (isNightBooked(cd && cd.raw)) { console.log(`  ${d} ${wcLabel(d)}  [BOOKED — frozen]`); continue; }
+      if (!SEED && isManualFreeze(d, today, freeze)) { console.log(`  ${d} ${wcLabel(d)}  [FROZEN — manual decay-freeze, skipped]`); continue; }
       const daysOut = daysBetween(today, d);
       if (!SEED && daysOut <= FREEZE_WITHIN_DAYS) { console.log(`  ${d} ${wcLabel(d)}  [≤${FREEZE_WITHIN_DAYS}d out — FROZEN for manual control]`); continue; }
       const cur = cd ? cd.price : null;
