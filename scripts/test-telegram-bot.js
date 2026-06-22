@@ -61,6 +61,31 @@ check('isOwner matches only the configured numeric id (string/number tolerant)',
   assert.strictEqual(bot.isOwner(update('x', 42), OWNER), false);
 });
 
+check('isOwnerDM requires owner sender AND owner private chat (group rejected)', () => {
+  assert.strictEqual(bot.isOwnerDM(update('x', OWNER, OWNER), OWNER), true);          // private DM
+  assert.strictEqual(bot.isOwnerDM(update('x', OWNER, -1001234567), OWNER), false);   // owner inside a group
+  assert.strictEqual(bot.isOwnerDM(update('x', 999, OWNER), OWNER), false);           // non-owner
+});
+
+check('SECURITY: owner command from a GROUP chat is ignored entirely (no parse, no action)', async () => {
+  const intent = { action: 'pricing_adjust', pct: -5, start: '2026-06-20', end: '2026-06-29', units: 'all' };
+  const { deps, calls } = makeDeps(intent);
+  let parsed = false;
+  deps.parse = async () => { parsed = true; return intent; };
+  const out = await bot.handleUpdate(update('lower prices 5%', OWNER, -1009999 /* group chat */), deps);
+  assert.strictEqual(out.ignored, true);
+  assert.deepStrictEqual(out.replies, []);
+  assert.strictEqual(parsed, false, 'must not parse a group message even from the owner');
+  assert.strictEqual(calls.length, 0);
+  assert.strictEqual(deps.pending.size, 0);
+});
+
+check('ownerTag exposes only last-3 digits, never the full owner id', () => {
+  assert.strictEqual(bot.ownerTag('1001392409'), '…409');
+  assert.strictEqual(bot.ownerTag(1001392409), '…409');
+  assert.ok(!bot.ownerTag('1001392409').includes('1001392409'), 'full id must not appear');
+});
+
 check('cleaning_status FIRES immediately (read-only) and invokes NO send/SMS handler', async () => {
   const intent = { action: 'cleaning_status', date: null };
   const { deps, calls } = makeDeps(intent);

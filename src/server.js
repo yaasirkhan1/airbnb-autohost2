@@ -86,10 +86,18 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
 const API_SECRET = process.env.API_SECRET;
+// Pure auth decision for /api/*. FAIL-CLOSED: if no API_SECRET is configured, REJECT (this surface
+// can move live prices + message guests — it must never be unauthenticated by accident). Exported
+// for tests.
+function checkApiAuth(apiSecret, authHeader) {
+  if (!apiSecret) return { ok: false, status: 401, error: 'Unauthorized — API_SECRET not configured' };
+  const token = String(authHeader || '').replace('Bearer ', '').trim();
+  if (token !== apiSecret) return { ok: false, status: 401, error: 'Unauthorized' };
+  return { ok: true };
+}
 app.use('/api/', (req, res, next) => {
-  if (!API_SECRET) return next(); // dev mode: skip if not set
-  const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
-  if (token !== API_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+  const auth = checkApiAuth(API_SECRET, req.headers.authorization);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
   next();
 });
 
@@ -3732,4 +3740,6 @@ module.exports = {
   buildCleaningScheduleText,
   // legacy-engine kill-switches (exported for tests)
   legacyEngineEnabled, legacyEngineExcluded,
+  // security (exported for tests)
+  checkApiAuth,
 };

@@ -24,13 +24,32 @@ function isOwner(update, ownerId) {
   return id != null && String(id) === String(ownerId);
 }
 
+// The chat an update came from (message OR edited_message), or null.
+function chatId(update) {
+  const m = update && (update.message || update.edited_message);
+  return m && m.chat && m.chat.id != null ? m.chat.id : null;
+}
+
+// Owner acting in their OWN private chat. In a Telegram 1:1 DM, chat.id === the user's id, so a
+// command the owner types inside a GROUP (chat.id = group id) is rejected — the bot never acts on,
+// or replies into, anything but the owner's private chat. Pins WHERE, on top of the WHO (isOwner).
+function isOwnerDM(update, ownerId) {
+  return isOwner(update, ownerId) && chatId(update) != null && String(chatId(update)) === String(ownerId);
+}
+
+// Log-safe owner tag — last 3 digits only, never the full id (which can identify the owner).
+function ownerTag(ownerId) {
+  return `…${String(ownerId == null ? '' : ownerId).slice(-3)}`;
+}
+
 // Core dispatch. Returns { ignored?, replies: [string], fired?: action }. Mutates deps.pending.
 async function handleUpdate(update, deps) {
   const { ownerId, pending } = deps;
   const msg = update && (update.message || update.edited_message);
 
-  // SECURITY GATE — anything not from the owner is dropped silently (no reply, no work).
-  if (!isOwner(update, ownerId)) return { ignored: true, replies: [] };
+  // SECURITY GATE — only the owner, and only in their private chat (chat.id === ownerId). Anything
+  // else (other user, or the owner inside a group) is dropped silently: no reply, no work.
+  if (!isOwnerDM(update, ownerId)) return { ignored: true, replies: [] };
   if (!msg || typeof msg.text !== 'string' || !msg.text.trim()) return { ignored: true, replies: [] };
 
   const chatId = msg.chat && msg.chat.id;
@@ -105,7 +124,7 @@ async function start(deps) {
   };
   deps.pending = deps.pending || new Map();
   let offset = 0;
-  log.log(`[telegram] ops bot started — long-polling (owner ${ownerId})`);
+  log.log(`[telegram] ops bot started — long-polling (owner ${ownerTag(ownerId)})`);
   // Fire-and-forget loop; never throws out (a poll error backs off and retries).
   (async function loop() {
     for (;;) {
@@ -114,8 +133,8 @@ async function start(deps) {
         const data = await r.json();
         for (const update of (data.result || [])) {
           offset = update.update_id + 1;
-          // Drop non-owner updates BEFORE any work (defense in depth alongside handleUpdate).
-          if (!isOwner(update, ownerId)) continue;
+          // Drop anything not from the owner's private chat BEFORE any work (defense in depth).
+          if (!isOwnerDM(update, ownerId)) continue;
           try {
             const out = await handleUpdate(update, deps);
             const chatId = (update.message || update.edited_message).chat.id;
@@ -132,4 +151,4 @@ async function start(deps) {
   })();
 }
 
-module.exports = { isOwner, senderId, handleUpdate, handleGuestDraft, executePending, start };
+module.exports = { isOwner, isOwnerDM, chatId, ownerTag, senderId, handleUpdate, handleGuestDraft, executePending, start };
