@@ -74,6 +74,26 @@ check('unknown/garbage action → clarify', () => {
   assert.strictEqual(N('not json at all').action, 'clarify');
 });
 
+// Regression: Haiku wraps JSON in ```json fences / prose preamble despite "JSON ONLY". The naive
+// JSON.parse collapsed EVERY command to "I could not understand that". The parser must extract it.
+check('WRAPPED model output (fences / preamble / whitespace) still parses to the right action', () => {
+  const bare = JSON.stringify({ action: 'checkin_status', confidence: 0.95 });
+  assert.strictEqual(N('```json\n' + bare + '\n```').action, 'checkin_status', 'fenced ```json```');
+  assert.strictEqual(N('```\n' + bare + '\n```').action, 'checkin_status', 'fenced plain');
+  assert.strictEqual(N('Here is the JSON:\n' + bare).action, 'checkin_status', 'prose preamble');
+  assert.strictEqual(N('\n\n  ' + bare + '  \n').action, 'checkin_status', 'whitespace');
+  // a real command, fenced end-to-end
+  const adj = JSON.stringify({ action: 'pricing_adjust', confidence: 0.9, pct: -5, start: '2026-06-20', end: '2026-06-29', units: 'all' });
+  assert.strictEqual(N('```json ' + adj + ' ```').action, 'pricing_adjust');
+});
+
+check('extractJson pulls the object from fenced/preambled text, null when truly absent', () => {
+  assert.deepStrictEqual(I.extractJson('```json\n{"a":1}\n```'), { a: 1 });
+  assert.deepStrictEqual(I.extractJson('blah {"a":1} blah'), { a: 1 });
+  assert.strictEqual(I.extractJson('no json here'), null);
+  assert.strictEqual(I.extractJson(''), null);
+});
+
 check('parseIntent runs the model output through normalize (Haiku stub)', async () => {
   const fakeClaude = async (model, _sys, _user) => {
     assert.strictEqual(model, I.PARSE_MODEL); // must use Haiku

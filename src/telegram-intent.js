@@ -46,11 +46,32 @@ function canonUnit(tok) {
 
 function clamp01(n) { const x = Number(n); return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0; }
 
+// Robustly pull a JSON object out of the model's text. Haiku frequently wraps its output in
+// ```json fences or adds a one-line preamble despite "JSON ONLY" instructions — a naive
+// JSON.parse then throws and collapses EVERY command to clarify. Mirrors draft-parse.js: try a
+// fenced block, then the first balanced {…}, then the whole string. Returns the object or null.
+function extractJson(text) {
+  const s = String(text == null ? '' : text).trim();
+  const candidates = [];
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) candidates.push(fence[1].trim());
+  const brace = s.match(/\{[\s\S]*\}/);      // first { … last } — survives fences AND preamble
+  if (brace) candidates.push(brace[0]);
+  candidates.push(s);
+  for (const c of candidates) {
+    try { const o = JSON.parse(c); if (o && typeof o === 'object') return o; } catch { /* next candidate */ }
+  }
+  return null;
+}
+
 // Validate/coerce the model's raw JSON into a safe intent. Unknown action, missing required field,
 // or confidence < 0.6 → { action:'clarify', reason }. Pure — the unit of the parse tests.
 function normalizeIntent(raw, { minConfidence = 0.6 } = {}) {
   let o = raw;
-  if (typeof raw === 'string') { try { o = JSON.parse(raw); } catch { return clarify('I could not understand that — can you rephrase?'); } }
+  if (typeof raw === 'string') {
+    o = extractJson(raw);
+    if (!o) return clarify('I could not understand that — can you rephrase?');
+  }
   if (!o || typeof o !== 'object' || !ACTIONS.has(o.action)) return clarify('I’m not sure what you want me to do — can you rephrase?');
   const confidence = clamp01(o.confidence);
   if (o.action !== 'clarify' && confidence < minConfidence) return clarify(o.reason || 'I’m not fully sure I understood — can you confirm what you want?');
@@ -122,9 +143,14 @@ async function parseIntent({ text, callClaude, today, minConfidence } = {}) {
   try {
     rawText = await callClaude(PARSE_MODEL, PARSE_SYSTEM_PROMPT, userMessage);
   } catch (e) {
+    console.error(`[telegram-parse] Claude call failed: ${e.message}`);
     return clarify('I had trouble reading that just now — can you send it again?');
   }
-  return normalizeIntent(rawText, { minConfidence });
+  const result = normalizeIntent(rawText, { minConfidence });
+  // One-line trace so a parse problem is visible in the logs (raw output + resolved action).
+  console.log(`[telegram-parse] "${String(text || '').slice(0, 60)}" → ${result.action}` +
+    `${result.action === 'clarify' ? ` (${result.reason})` : ''} | raw: ${String(rawText || '').replace(/\s+/g, ' ').slice(0, 140)}`);
+  return result;
 }
 
-module.exports = { ACTIONS, PARSE_MODEL, PARSE_SYSTEM_PROMPT, canonUnit, normalizeIntent, parseIntent, clarify };
+module.exports = { ACTIONS, PARSE_MODEL, PARSE_SYSTEM_PROMPT, canonUnit, normalizeIntent, parseIntent, clarify, extractJson };
