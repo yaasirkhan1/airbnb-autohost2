@@ -20,6 +20,37 @@ check('cleaning override → multiple ops, units canonicalized, urgent/deadline 
   assert.strictEqual(r.ops[1].deadline, '4:00PM');
 });
 
+check('cleaning_status (VIEW) → cleaning_status with optional date, NOT cleaning_override', () => {
+  const r = N({ action: 'cleaning_status', confidence: 0.95 });
+  assert.deepStrictEqual([r.action, r.date], ['cleaning_status', null]); // null → handler defaults to tomorrow
+  assert.strictEqual(N({ action: 'cleaning_status', confidence: 0.95, date: '2026-06-25' }).date, '2026-06-25');
+  // an ADD/REMOVE instruction must still be cleaning_override (the two never collide)
+  assert.strictEqual(N({ action: 'cleaning_override', confidence: 0.95, ops: [{ op: 'add', unit: '21-I' }] }).action, 'cleaning_override');
+});
+
+check('view-phrasings classify to cleaning_status, not cleaning_override (pipeline, stubbed model)', async () => {
+  // Simulate Haiku correctly labeling each VIEW phrasing as cleaning_status (read-only query).
+  const fakeClaude = async (_m, _s, user) => {
+    const t = (user.split('Host message: ')[1] || '').toLowerCase();
+    const isView = /(what'?s| what )|show|which|who'?s|view|list|on the cleaning/.test(t) && !/\badd\b|\bremove\b|take .* off/.test(t);
+    return JSON.stringify(isView
+      ? { action: 'cleaning_status', confidence: 0.95, date: null }
+      : { action: 'cleaning_override', confidence: 0.95, ops: [{ op: 'add', unit: '21-I' }] });
+  };
+  for (const phrase of [
+    "what's on the cleaning schedule tomorrow",
+    "what's being cleaned tomorrow",
+    "show cleaning for June 25",
+    "which units are being cleaned tomorrow",
+  ]) {
+    const r = await I.parseIntent({ text: phrase, callClaude: fakeClaude, today: '2026-06-22' });
+    assert.strictEqual(r.action, 'cleaning_status', `"${phrase}" → cleaning_status`);
+  }
+  // sanity: an actual instruction still routes to cleaning_override
+  const ov = await I.parseIntent({ text: 'add 21-I to cleaning tomorrow', callClaude: fakeClaude, today: '2026-06-22' });
+  assert.strictEqual(ov.action, 'cleaning_override');
+});
+
 check('cleaner_message → message text', () => {
   const r = N({ action: 'cleaner_message', confidence: 0.9, message: 'Skip 7-B today, guest extended.' });
   assert.deepStrictEqual([r.action, r.message], ['cleaner_message', 'Skip 7-B today, guest extended.']);

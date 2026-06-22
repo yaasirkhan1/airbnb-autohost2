@@ -31,6 +31,7 @@ function makeDeps(parseReturns) {
         : { status: 'one', guest: { label: `${name} (21-I)`, id: 'res_1' } },
       handlers: {
         cleaning_override: rec('cleaning_override'),
+        cleaning_status: rec('cleaning_status'),
         cleaner_message: rec('cleaner_message'),
         checkin_status: rec('checkin_status'),
         checkin_resend: rec('checkin_resend'),
@@ -58,6 +59,18 @@ check('isOwner matches only the configured numeric id (string/number tolerant)',
   assert.strictEqual(bot.isOwner(update('x', OWNER), OWNER), true);
   assert.strictEqual(bot.isOwner(update('x', OWNER), String(OWNER)), true);
   assert.strictEqual(bot.isOwner(update('x', 42), OWNER), false);
+});
+
+check('cleaning_status FIRES immediately (read-only) and invokes NO send/SMS handler', async () => {
+  const intent = { action: 'cleaning_status', date: null };
+  const { deps, calls } = makeDeps(intent);
+  const out = await bot.handleUpdate(update("what's on the cleaning schedule tomorrow"), deps);
+  assert.strictEqual(out.fired, 'cleaning_status');
+  assert.strictEqual(deps.pending.size, 0, 'read-only — no confirmation pending');
+  assert.deepStrictEqual(calls.map(c => c[0]), ['cleaning_status'], 'only the view handler ran');
+  for (const forbidden of ['cleaning_override', 'cleaner_message', 'guest_message_send']) {
+    assert.ok(!calls.some(c => c[0] === forbidden), `${forbidden} must NOT run for a view query`);
+  }
 });
 
 check('cleaning override FIRES immediately (no confirmation gate)', async () => {

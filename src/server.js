@@ -3249,6 +3249,27 @@ async function sendCleaningSchedule() {
   return { ok: allOk, smsBody, entries: finalEntries.length, override: override || null, recipients: results };
 }
 
+// READ-ONLY view of a date's cleaning list — the SAME entries + host overrides the 9 PM cron would
+// send to Veronica, but sends NO SMS and mutates NOTHING (no override expiry/persist). Powers the
+// Telegram "cleaning_status" query. The override store is loaded + pruned IN MEMORY for display only
+// (never saved), so viewing tonight's list can't expire an override the real 9 PM run still needs.
+async function buildCleaningScheduleText(dateStr) {
+  const spanishDate = formatSpanishDate(dateStr);
+  const entries = [];
+  for (const unit of CLEANING_UNITS) {
+    const entry = await buildCleaningEntry(unit, dateStr);   // GET reservations only — no send
+    if (entry) entries.push(entry);
+    await new Promise(r => setTimeout(r, 150));
+  }
+  const todayET  = dateInTimeZone(new Date(), 'America/New_York');
+  const override = cleaningOverride.pruneExpired(cleaningOverride.loadStore(), todayET)[dateStr]; // read-only
+  let finalEntries = entries;
+  if (override && ((override.add || []).length || (override.remove || []).length)) {
+    finalEntries = cleaningOverride.applyOverride(entries, override);
+  }
+  return { text: buildScheduleSMS(finalEntries, spanishDate), count: finalEntries.length, date: dateStr, override: override || null };
+}
+
 // POST /api/cleaning-override — host-set manual add/remove for one night's cleaning schedule.
 // Body: { action: 'add'|'remove', unit: '7-B', date?: 'YYYY-MM-DD' }  (date defaults to tomorrow,
 // i.e. tonight's 9 PM run). Recorded + persisted; merged into that night's run, then auto-expired.
@@ -3513,6 +3534,11 @@ app.listen(PORT, () => {
         const { ok, json } = await callLocalApi('POST', '/api/cleaner-message', { message: intent.message });
         return ok ? `✅ Texted Veronica: “${intent.message}”` : `⚠️ Couldn't text Veronica: ${json.error || 'failed'}`;
       },
+      cleaning_status: async (intent) => {
+        const date = intent.date || tomorrowDateString();   // default: tonight's run (tomorrow)
+        const { text, count } = await buildCleaningScheduleText(date);   // read-only — sends nothing
+        return `🧹 Cleaning schedule for ${date} (preview — nothing sent to Veronica):\n\n${text}\n\n(${count} unit${count === 1 ? '' : 's'}${intent.date ? '' : ' — defaulted to tomorrow'})`;
+      },
       checkin_status: async () => {
         const plan = await runMorningCheckinSweep(true); // DRY-RUN — sends nothing
         return `🏨 Check-in status ${today()}:\n${plan.summary}`;
@@ -3703,6 +3729,7 @@ module.exports = {
   hostRepliedAfterGuest, dispatchPendingReply, pendingReplies,
   // cleaning-schedule (exported for dry-run/tests; no SMS send path is touched)
   buildCleaningEntry, getReservationsForDate, buildScheduleSMS, formatSpanishDate, CLEANING_UNITS,
+  buildCleaningScheduleText,
   // legacy-engine kill-switches (exported for tests)
   legacyEngineEnabled, legacyEngineExcluded,
 };

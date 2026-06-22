@@ -6,6 +6,7 @@
 
 const ACTIONS = new Set([
   'cleaning_override',   // add/remove units from a night's cleaning list (immediate)
+  'cleaning_status',     // VIEW the cleaning list for a date — read-only, sends nothing
   'cleaner_message',     // one-off SMS to Veronica (immediate)
   'checkin_status',      // today's check-in sweep result (read-only)
   'checkin_resend',      // re-send check-in instructions to a guest/unit (immediate)
@@ -24,7 +25,8 @@ The host runs 7 Atlanta units (labels: 4-L, 7-B, 18-A, 21-D, 21-I, 23-N, 24-L). 
 
 Pick exactly one "action" from this list and include its fields:
 
-- "cleaning_override": add/remove units from a night's cleaning list. Field "ops": array of {"op":"add"|"remove","unit":"21-I","urgent":true|false,"deadline":"4:00PM"|null,"date":"YYYY-MM-DD"|null}. "tomorrow"/"tonight" → date:null (defaults to tomorrow). "urgent"/"guest arriving" → urgent:true. "ready by 4"/"by 4pm" → deadline. A message can carry several ops ("take 24-L off and add 21-I urgent").
+- "cleaning_override": CHANGE a night's cleaning list by ADDING or REMOVING units. Field "ops": array of {"op":"add"|"remove","unit":"21-I","urgent":true|false,"deadline":"4:00PM"|null,"date":"YYYY-MM-DD"|null}. "tomorrow"/"tonight" → date:null (defaults to tomorrow). "urgent"/"guest arriving" → urgent:true. "ready by 4"/"by 4pm" → deadline. A message can carry several ops ("take 24-L off and add 21-I urgent"). Use this ONLY when the host is adding/removing a unit — NOT when they are just asking what's scheduled.
+- "cleaning_status": VIEW/show the cleaning list for a date — a READ-ONLY query that sends nothing and changes nothing. Use for "what's on the cleaning schedule [tomorrow]", "what's being cleaned [tomorrow/<date>]", "show cleaning for <date>", "who's cleaning tomorrow", "what needs cleaning". Field "date":"YYYY-MM-DD" optional (default: tomorrow). If the host is asking WHAT is scheduled (not changing it), this is the action — never cleaning_override.
 - "cleaner_message": a free-text SMS to the cleaner. Field "message": the exact text to send.
 - "checkin_status": show today's check-in sweep. Optional "date":"YYYY-MM-DD".
 - "checkin_resend": re-send check-in instructions. Field "target": guest name OR unit label.
@@ -88,6 +90,8 @@ function normalizeIntent(raw, { minConfidence = 0.6 } = {}) {
       if (!ops.length) return clarify('Which unit and add or remove? e.g. "add 21-I urgent, take 24-L off".');
       return { action: 'cleaning_override', ops, confidence };
     }
+    case 'cleaning_status':
+      return { action: 'cleaning_status', date: validDate(o.date) || null, confidence };
     case 'cleaner_message': {
       const message = String(o.message || '').trim();
       if (!message) return clarify('What should I text Veronica?');
