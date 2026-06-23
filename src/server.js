@@ -1537,7 +1537,12 @@ const DE_ESCALATION_GUIDANCE = `DE-ESCALATION MODE — this guest reads as frust
 - ALWAYS send the guest a reply (set "confident": true) — NEVER a silent or empty escalation when they're upset; leaving a frustrated guest with no response is the worst outcome. If the issue needs a person to actually fix it (maintenance, the host), still reply warmly that you're getting the team on it right now and will follow up — that IS the next step. This overrides the general "set confident:false when you can't fully resolve it" rule for an upset guest: acknowledge and reassure rather than going silent.
 - HARD MONEY BOUNDARY: if the message touches money, refunds, a discount, a dispute, chargebacks, or compensation, do NOT negotiate, quote, estimate, or promise any refund/credit/amount yourself. Acknowledge, de-escalate, and tell them you're escalating to the host/owner who will personally follow up — then stop. The host handles all money personally. (Money complaints are normally auto-escalated and not auto-replied; this is the boundary for any money element that still reaches you.)`;
 
-async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null, conversationId = null) {
+// HOST IN-THREAD AUTHORITY — a statement the host already made to THIS guest in the thread
+// outranks the stored house rules / amenities / policies. The bot must stay consistent with it
+// and NEVER contradict it. Bounded: does NOT extend to money/refunds (still escalated) or safety.
+const HOST_AUTHORITY_DIRECTIVE = `HOST DIRECTION OVERRIDES STORED RULES: If the host has already told this guest something earlier in this conversation, that statement is authoritative and OVERRIDES the stored house rules, amenities, and policies above. Stay consistent with what the host told the guest and NEVER contradict it — for example, if the host said smoking is allowed on the patio, do not tell the guest smoking is prohibited. This authority is limited to house rules, amenities, and policies: it does NOT permit promising refunds or money back (money and refund matters are still escalated to a human), and it never overrides safety.`;
+
+async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null, conversationId = null, deps = {}) {
   // Front-desk contingency detected by ANY means (single regex, fragment burst, or
   // classifier) → send the EXACT hardcoded reply, never Claude's freeform wording.
   // This catches split/fragmented requests that no single message matches.
@@ -1674,6 +1679,7 @@ ${vaultEntry?.getting_around ? `- Parking / getting around: ${vaultEntry.getting
 ${vaultEntry?.customNotes ? `- Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
 ${factsSection}
+${HOST_AUTHORITY_DIRECTIVE}
 ${JSON_INSTRUCTIONS}`;
   } else {
     stableSystem = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style.
@@ -1687,6 +1693,7 @@ ${vaultEntry?.getting_around ? `Parking / getting around: ${vaultEntry.getting_a
 ${vaultEntry?.customNotes ? `Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
 ${factsSection}
+${HOST_AUTHORITY_DIRECTIVE}
 ${JSON_INSTRUCTIONS}`;
   }
 
@@ -1757,7 +1764,8 @@ ${JSON_INSTRUCTIONS}`;
   // Guest replies run on Sonnet (quality at reasonable cost). Isolated override — REPLY_MODEL
   // (the callClaude default) is left as-is so listing-copy generation is unaffected, and the
   // concierge classifiers are pinned to Haiku separately.
-  const raw = await callClaude(systemBlocks, promptInput, 600, 'claude-sonnet-4-6');
+  const _callClaude = deps.callClaude || callClaude;
+  const raw = await _callClaude(systemBlocks, promptInput, 600, 'claude-sonnet-4-6');
 
   // Tiered parse: valid JSON envelope → use it; plain prose (no JSON) → recover it as
   // the reply; empty/refusal or malformed JSON → escalate. (Fixes the bug where any
@@ -3740,7 +3748,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 // start the server thanks to the `require.main === module` guard around app.listen.
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX, isMoneyComplaint,
-  pushConvoMsg, recentMsgsByConvo,
+  pushConvoMsg, recentMsgsByConvo, HOST_AUTHORITY_DIRECTIVE,
   callClaude, decideConciergeIntent, isFrustrated, summarizeOlderTurns, clampManualPrice,
   buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
   sendOpenPhoneSms,
