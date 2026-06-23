@@ -1871,8 +1871,14 @@ app.post('/webhook/hospitable', (req, res, next) => {
   console.log('[webhook] data keys:', Object.keys(msg).join(', '));
 
   const senderRole = msg.sender_role;
-  if (senderRole === 'host' || senderRole === 'co-host' || senderRole === 'teammate') {
-    console.log(`[webhook] sender_role="${senderRole}" — ignoring`);
+  if (HOST_REPLY_ROLES.has(senderRole)) {
+    // Host/co-host/teammate reply (incl. ones the host typed in the Airbnb app and Hospitable
+    // mirrored to us). DO NOT generate a reply to it — but DO buffer it so the bot stays
+    // consistent with what the host told the guest. For inquiries this is the ONLY thread
+    // history that exists (GET /inquiries/{id}/messages is 405). pushConvoMsg no-ops on a
+    // missing conversation_id or empty body.
+    if (msg.conversation_id) pushConvoMsg(msg.conversation_id, 'host', (msg.body || '').trim());
+    console.log(`[webhook] sender_role="${senderRole}" — buffered host reply, not replying`);
     return;
   }
 
@@ -3734,6 +3740,7 @@ app.post('/api/vault/:propertyId/push', (req, res) => {
 // start the server thanks to the `require.main === module` guard around app.listen.
 module.exports = {
   detectHardcodedResponse, draftReply, isParkingQuestion, CONCIERGE_REGEX, isMoneyComplaint,
+  pushConvoMsg, recentMsgsByConvo,
   callClaude, decideConciergeIntent, isFrustrated, summarizeOlderTurns, clampManualPrice,
   buildThreadMessages, checkinAlreadySent, fetchMessagesForReservation, fetchReservationsForProperty,
   sendOpenPhoneSms,
