@@ -1540,7 +1540,7 @@ const DE_ESCALATION_GUIDANCE = `DE-ESCALATION MODE — this guest reads as frust
 // HOST IN-THREAD AUTHORITY — a statement the host already made to THIS guest in the thread
 // outranks the stored house rules / amenities / policies. The bot must stay consistent with it
 // and NEVER contradict it. Bounded: does NOT extend to money/refunds (still escalated) or safety.
-const HOST_AUTHORITY_DIRECTIVE = `HOST DIRECTION OVERRIDES STORED RULES: If the host has already told this guest something earlier in this conversation, that statement is authoritative and OVERRIDES the stored house rules, amenities, and policies above. Stay consistent with what the host told the guest and NEVER contradict it — for example, if the host said smoking is allowed on the patio, do not tell the guest smoking is prohibited. This authority is limited to house rules, amenities, and policies: it does NOT permit promising refunds or money back (money and refund matters are still escalated to a human), and it never overrides safety.`;
+const HOST_AUTHORITY_DIRECTIVE = `HOST DIRECTION OVERRIDES STORED RULES (this is the final and highest-priority instruction): If the host has already told this guest something earlier in this conversation, that statement is authoritative and OVERRIDES the stored house rules, amenities, and policies above. Stay consistent with what the host told the guest and NEVER contradict it — for example, if the host said smoking is allowed on the patio, do not tell the guest smoking is prohibited. A host statement in this thread COUNTS as in-context information you can answer from — so it OVERRIDES the confidence rules above: when the host has already stated the relevant rule or policy, answer the guest's question CONFIDENTLY and directly from it (you MUST set "confident": true with a real reply) instead of setting "confident": false or escalating, and do not fall back on the conflicting stored rule. This authority is limited to house rules, amenities, and policies: it does NOT permit promising refunds or money back (money and refund matters are still escalated to a human), and it never overrides safety.`;
 
 async function draftReply(guestName, messageBody, propertyName, propertyId, conciergeHit = false, resourceId = null, resourceType = null, conversationId = null, deps = {}) {
   // Front-desk contingency detected by ANY means (single regex, fragment burst, or
@@ -1672,29 +1672,29 @@ ${profileData.profile}
 PROPERTY DETAILS:
 - Check-in: ${HOST_SETTINGS.checkin}
 - Check-out: ${HOST_SETTINGS.checkout}
-- House rules: ${HOST_SETTINGS.houseRules}
+- House rules (DEFAULT policies — if the host has personally told THIS guest something different in the conversation, the host's statement wins and you follow it): ${HOST_SETTINGS.houseRules}
 ${HOST_SETTINGS.extraContext ? `- Extra context: ${HOST_SETTINGS.extraContext}` : ''}
 ${vaultEntry?.guest_access ? `- Guest access / WiFi: ${vaultEntry.guest_access}` : ''}
 ${vaultEntry?.getting_around ? `- Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `- Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
 ${factsSection}
-${HOST_AUTHORITY_DIRECTIVE}
-${JSON_INSTRUCTIONS}`;
+${JSON_INSTRUCTIONS}
+${HOST_AUTHORITY_DIRECTIVE}`;
   } else {
     stableSystem = `You are ${HOST_SETTINGS.name}, an Airbnb host with a ${HOST_SETTINGS.tone} communication style.
 
 Property: ${propertyName}
 Check-in: ${HOST_SETTINGS.checkin} | Check-out: ${HOST_SETTINGS.checkout}
-House rules: ${HOST_SETTINGS.houseRules}
+House rules (DEFAULT policies — if the host has personally told THIS guest something different in the conversation, the host's statement wins and you follow it): ${HOST_SETTINGS.houseRules}
 ${HOST_SETTINGS.extraContext ? `Context: ${HOST_SETTINGS.extraContext}` : ''}
 ${vaultEntry?.guest_access ? `Guest access / WiFi: ${vaultEntry.guest_access}` : ''}
 ${vaultEntry?.getting_around ? `Parking / getting around: ${vaultEntry.getting_around}` : ''}
 ${vaultEntry?.customNotes ? `Additional notes: ${vaultEntry.customNotes}` : ''}
 ${knowledgeSection}
 ${factsSection}
-${HOST_AUTHORITY_DIRECTIVE}
-${JSON_INSTRUCTIONS}`;
+${JSON_INSTRUCTIONS}
+${HOST_AUTHORITY_DIRECTIVE}`;
   }
 
   // Two-mode tone (TONE ONLY — never overrides facts/prices/policies/guardrails): an INQUIRY

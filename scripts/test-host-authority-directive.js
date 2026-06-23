@@ -20,6 +20,12 @@ ok('directive asserts host statements OVERRIDE stored rules and must not be cont
   assert.ok(t.includes('contradict'), 'forbids contradicting the host');
 });
 
+ok('directive instructs a CONFIDENT answer from the host’s statement (no hedging/escalation)', () => {
+  const t = HOST_AUTHORITY_DIRECTIVE.toLowerCase();
+  assert.ok(t.includes('confident'), 'tells the model to answer confidently from the host statement');
+  assert.ok(t.includes('hedge') || t.includes('escalate'), 'forbids hedging/escalating when the host already answered');
+});
+
 ok('directive carves out money/refunds and safety', () => {
   const t = HOST_AUTHORITY_DIRECTIVE.toLowerCase();
   assert.ok(t.includes('refund') || t.includes('money'), 'money/refund carve-out present');

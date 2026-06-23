@@ -124,3 +124,26 @@ policies, the host's live in-thread word outranks the stored rule.
 
 - Build on branch `fix/inquiry-host-reply-blindspot`.
 - Show the diff and real test output; **do not deploy** until the host explicitly says so.
+
+## Implementation outcome (2026-06-23, live-verified against production env)
+
+- **Part 1 (buffer ingestion):** works. Production logs confirmed host messages arrive as
+  `message.created` webhooks (`[webhook] sender_role="host" — ignoring` lines on the old code),
+  so ingesting them closes the blind spot.
+- **Part 2 (directive):** a standalone directive alone did NOT reliably win against a
+  categorical stored rule ("No smoking anywhere") — the model would still either escalate or, in
+  one case, contradict the host. Two reinforcing changes were needed: (a) the directive moved to
+  be the FINAL system instruction and worded to override the confidence/escalation rules, and
+  (b) the stored house-rules line reframed inline as **DEFAULT policies that a host in-thread
+  statement overrides**.
+- **Result (host said "patio OK", `HOUSE_RULES`="No smoking anywhere"):** the contradiction is
+  eliminated — across live runs the bot never again recited "no smoking" after the host said the
+  patio was fine. On a rule-vs-host conflict the bot either confidently confirms the host's
+  direction or escalates to the host (`confident:false`, no guest reply). It does NOT always
+  confidently confirm (model variance on a genuine conflict); the host accepted this **safe
+  floor** (never contradict; escalate-on-conflict) rather than pushing the model toward
+  over-trusting host statements.
+- **Default behavior preserved:** with NO host override in the thread, the bot still confidently
+  recites the stored house rules (live-verified: "strict no-smoking", "no parties").
+- **Money/safety carve-out intact:** `isMoneyComplaint` still escalates money/refund messages
+  before `draftReply` runs; the directive retains its explicit money/refund + safety carve-out.
