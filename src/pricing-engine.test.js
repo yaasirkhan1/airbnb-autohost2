@@ -42,7 +42,7 @@ ok('Sun/Mon/Tue no soft floor, can sit near hard floor when decayed', () => {
   assert.ok(r.price >= config.units['23-N'].floor, `price ${r.price} below hard floor`);
 });
 
-ok('Dragon Con: set price $500 1BR / $695 2BR + 5-night min', () => {
+ok('Dragon Con glide holds $500 1BR / $695 2BR far out + 5-night min', () => {
   const r4L = computeNight(config, '4-L', '2026-09-04', FAR);  // 1BR
   const r21I = computeNight(config, '21-I', '2026-09-04', FAR); // 2BR
   assert.strictEqual(r4L.minStay, 5);
@@ -50,10 +50,15 @@ ok('Dragon Con: set price $500 1BR / $695 2BR + 5-night min', () => {
   assert.strictEqual(r21I.price, 695, `2BR got ${r21I.price}`);
 });
 
-ok('set-price event (Jan Atlanta Market) uses fixed $199 + 8 min', () => {
-  const r = computeNight(config, '18-A', '2026-01-15', FAR);
-  assert.strictEqual(r.price, 199, `got ${r.price}`);
-  assert.strictEqual(r.minStay, 8);
+ok('set-price event (Nov 6-9 flat hold) uses fixed $129 + 3-night min', () => {
+  // Replaces the dropped Q1-2026 "Jan Atlanta Market" event. Current config's set events are the
+  // Jun 7-13 hold and this Nov 6-9 flat hold ($129 both unit types, 3-night min). Set prices
+  // ignore lead-time.
+  const r1 = computeNight(config, '18-A', '2026-11-07', FAR);  // 1BR
+  const r2 = computeNight(config, '21-I', '2026-11-07', FAR);  // 2BR (same flat price)
+  assert.strictEqual(r1.price, 129, `1BR got ${r1.price}`);
+  assert.strictEqual(r2.price, 129, `2BR got ${r2.price}`);
+  assert.strictEqual(r1.minStay, 3, `minStay got ${r1.minStay}`);
 });
 
 ok('2027 winter market: 2BR gets $235, 1BR gets $199', () => {
@@ -92,22 +97,26 @@ ok('min-stay decay: [4,3] gives 4 far out, 3 near', () => {
   assert.strictEqual(resolveMinStay([4,3], 5), 3);
 });
 
-ok('World Cup dates are SKIPPED — engine returns no price, no write', () => {
-  const r = computeNight(config, '4-L', '2026-07-15', FAR); // WC semifinal day
-  assert.strictEqual(r.skip, true, 'should be skip');
-  assert.strictEqual(r.price, null, `price should be null, got ${r.price}`);
-  assert.ok(r.event && r.event.toLowerCase().includes('world cup'));
+ok('World Cup dates are PRICED via glide (hard-skip removed) — semifinal holds its start far out', () => {
+  // WC is now MANAGED as glide tiers; the old priceMode:"skip" hard hands-off was removed. A WC
+  // night must return a real price (not skip), holding its glide start price when far out.
+  const r = computeNight(config, '4-L', '2026-07-15', FAR); // WC semifinal day, far out
+  assert.ok(!r.skip, `WC dates must no longer hard-skip (got skip=${r.skip})`);
+  assert.strictEqual(r.price, 375, `semifinal 1BR glide start, got ${r.price}`);
+  assert.ok(/semifinal/i.test(r.event || ''), `should be the WC semifinal event, got "${r.event}"`);
+  assert.strictEqual(r.layers.decay, 'skipped(glide-event)', 'glide encodes its own descent; generic decay skipped');
 });
 
-ok('skip wins over overlapping events inside the WC window (no leak dates)', () => {
-  // Jul 7: Ariana Grande overlaps the World Cup skip window — skip must take precedence.
-  const aria = computeNight(config, '4-L', '2026-07-07', FAR);
-  assert.strictEqual(aria.skip, true, `Jul 7 should skip, got event=${aria.event} price=${aria.price}`);
-  assert.strictEqual(aria.price, null);
-  // Jun 14: Atlanta Market Summer overlaps the WC start day — skip must take precedence.
+ok('overlapping WC events resolve to the HIGHER-priced glide (no hard-skip)', () => {
+  // Jul 7: WC knockout marquee ($300) overlaps Ariana Grande ($132) — the higher event wins, no skip.
+  const jul7 = computeNight(config, '4-L', '2026-07-07', FAR);
+  assert.ok(!jul7.skip, `Jul 7 must not skip (got skip=${jul7.skip})`);
+  assert.strictEqual(jul7.price, 300, `Jul 7 should take the marquee $300, got ${jul7.price}`);
+  assert.ok(/marquee/i.test(jul7.event || ''), `Jul 7 should be the marquee event, got "${jul7.event}"`);
+  // Jun 14 (2BR): WC shoulder ($225) overlaps the June baseline ($213) — the higher event wins.
   const jun14 = computeNight(config, '21-I', '2026-06-14', FAR);
-  assert.strictEqual(jun14.skip, true, `Jun 14 should skip, got event=${jun14.event} price=${jun14.price}`);
-  assert.strictEqual(jun14.price, null);
+  assert.ok(!jun14.skip, `Jun 14 must not skip (got skip=${jun14.skip})`);
+  assert.strictEqual(jun14.price, 225, `Jun 14 2BR should take the shoulder $225, got ${jun14.price}`);
 });
 
 console.log(`\n${pass} passed`);

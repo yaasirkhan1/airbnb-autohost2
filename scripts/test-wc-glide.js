@@ -35,12 +35,17 @@ ok('group match (Jun 18) 176→166 / 238→224, min 2→1; higher-wins over base
   assert.strictEqual(at('21-I', '2026-06-18', 0).price, 224);
 });
 
-ok('knockout (Jul 1, Jul 7) 300→250 / 380→338', () => {
-  assert.strictEqual(at('23-N', '2026-07-01', 7).price, 300);
+ok('knockout (Jul 1, Jul 7) hold start within their per-night ease window, floor at lead 0: 300→250 / 380→338', () => {
+  // Per-night easeStartDays (Jul 1 = 8 days out, Jul 7 = 14) — set so unbooked nights decay daily
+  // from today instead of holding flat until 7d out. Start holds at lead == ease; floor at lead 0.
+  assert.strictEqual(at('23-N', '2026-07-01', 8).price, 300);
+  assert.strictEqual(at('23-N', '2026-07-01', 0).price, 250);
+  assert.strictEqual(at('21-I', '2026-07-01', 8).price, 380);
+  assert.strictEqual(at('21-I', '2026-07-01', 0).price, 338);
+  assert.strictEqual(at('23-N', '2026-07-07', 14).price, 300);
   assert.strictEqual(at('23-N', '2026-07-07', 0).price, 250);
-  assert.strictEqual(at('21-I', '2026-07-01', 7).price, 380);
-  assert.strictEqual(at('21-I', '2026-07-07', 0).price, 338);
-  assert.ok(/knockout/i.test(at('23-N', '2026-07-01', 7).event));
+  assert.strictEqual(at('21-I', '2026-07-07', 14).price, 380);
+  assert.ok(/knockout/i.test(at('23-N', '2026-07-01', 8).event));
 });
 
 ok('semifinal (Jul 15) 375→350 / 475→420, min 2→1 (WC rule)', () => {
@@ -66,7 +71,7 @@ ok('booked WC night is frozen (not pushable); unbooked is pushable', () => {
 ok('overlap: Jul 6 shoulder ($167) beats both baseline and Ariana Grande; Jul 7 knockout beats all', () => {
   // Jul 6 is shoulder (pre Jul 7 knockout): $167 > baseline $158 > Ariana $132
   assert.ok(/shoulder/i.test(at('23-N', '2026-07-06', 7).event), 'Jul 6: shoulder ($167) wins');
-  assert.strictEqual(at('23-N', '2026-07-06', 7).price, 167);
+  assert.strictEqual(at('23-N', '2026-07-06', 13).price, 167); // Jul 6 shoulder ease = 13 (per-night daily decay): start holds at lead 13
   assert.ok(/knockout/i.test(at('23-N', '2026-07-07', 7).event), 'Jul 7: knockout ($300) > all');
 });
 
