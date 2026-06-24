@@ -85,7 +85,10 @@ function upsertPropertiesMap(id, fields) {
   return map[id];
 }
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public')));
+// Dashboards (public/index.html, public/vault.html) are NO LONGER served publicly: they embedded
+// the API_SECRET in client-side JS, exposing it to anyone who loaded the page. Run them locally
+// against the API with a secret supplied at runtime instead. (Do not re-add a blanket static mount
+// over ../public without first removing any secret from those files.)
 
 const API_SECRET = process.env.API_SECRET;
 // Pure auth decision for /api/*. FAIL-CLOSED: if no API_SECRET is configured, REJECT (this surface

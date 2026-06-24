@@ -143,7 +143,7 @@ These are paraphrased general hospitality principles (our own words). Factual gu
 24/7 auto-responder for **7 Airbnb properties** at **300 Peachtree Road NE, Downtown Atlanta, GA**. The server polls Hospitable every 60 seconds for new guest messages, runs them through a hardcoded trigger matcher, and falls back to Claude (claude-sonnet-4-6) for anything that doesn't match. All replies are signed **"Cal"**.
 
 - **Production URL**: https://airbnb-autohost2-production.up.railway.app
-- **API_SECRET**: `51419b9c8d371fca2c641965952729276fef5f82cbc38a27f3eb9ca708b600d2`
+- **API_SECRET**: stored in Railway env / local `.env` only — never commit the value. Read it from `process.env.API_SECRET` (see `.env`, which is gitignored).
 - **Deployment**: Railway — auto-deploys from `yaasirkhan1/airbnb-autohost2` on GitHub push to `main`
 - **Runtime**: Node.js ≥ 18, single entrypoint `src/server.js` (2,100+ lines)
 
@@ -300,7 +300,7 @@ Required env vars for local dev (copy from Railway dashboard or `.env`):
 HOSPITABLE_API_KEY=
 ANTHROPIC_API_KEY=
 RESEND_API_KEY=
-API_SECRET=51419b9c8d371fca2c641965952729276fef5f82cbc38a27f3eb9ca708b600d2
+API_SECRET=        # copy from Railway dashboard / local .env — do NOT commit the value
 ```
 
 ## Repo

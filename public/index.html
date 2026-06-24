@@ -162,7 +162,10 @@
 <script>
 let data = { pending: [], log: [], settings: {} };
 const todayStart = new Date().setHours(0,0,0,0);
-const AUTH_HEADER = { 'Authorization': 'Bearer 51419b9c8d371fca2c641965952729276fef5f82cbc38a27f3eb9ca708b600d2' };
+// Secret intentionally NOT hardcoded — paste the current API_SECRET here at runtime when running
+// this dashboard locally. Never commit the value (this page is no longer served publicly).
+const API_SECRET = '';  // <-- paste locally, do not commit
+const AUTH_HEADER = { 'Authorization': 'Bearer ' + API_SECRET };
 
 async function load() {
   try {

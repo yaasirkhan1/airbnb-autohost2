@@ -4,7 +4,7 @@ description: Simulate a guest message through the auto-responder and show exactl
 ---
 
 POST to https://airbnb-autohost2-production.up.railway.app/webhook/test with the provided message as {"message": "<arg>", "guest_name": "Test Guest"}.
-Use Authorization: Bearer 51419b9c8d371fca2c641965952729276fef5f82cbc38a27f3eb9ca708b600d2
+Use Authorization: Bearer $API_SECRET (read the current value from the local .env / Railway env — never hardcode it here)
 
 Show:
 - The full drafted reply (untruncated)
