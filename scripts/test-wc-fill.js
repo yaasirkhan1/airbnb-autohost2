@@ -23,14 +23,16 @@ check('weekend = Fri/Sat/Sun only', () => {
   assert.ok(!W.isWeekend('2026-06-22') && !W.isWeekend('2026-06-18')); // Mon / Thu
 });
 
-check('floors: tier values, +15% weekend uplift (rounded)', () => {
-  assert.strictEqual(W.wcFloor('1BR', '2026-06-22'), 114); // weekday shoulder
-  assert.strictEqual(W.wcFloor('1BR', '2026-06-24'), 124); // weekday game
-  assert.strictEqual(W.wcFloor('1BR', '2026-06-21'), 143); // weekend game 124*1.15
-  assert.strictEqual(W.wcFloor('1BR', '2026-06-26'), 114); // weekend base 99*1.15
-  assert.strictEqual(W.wcFloor('2BR', '2026-06-22'), 148); // weekday shoulder
-  assert.strictEqual(W.wcFloor('2BR', '2026-06-21'), 185); // weekend game 161*1.15
-  assert.strictEqual(W.wcFloor('2BR', '2026-06-26'), 148); // weekend base 129*1.15
+check('floors: tier values + 15% weekend uplift, then host 2.5% floorCut on Jun 22–30', () => {
+  // Jun 22–30 floors take the host's 2.5% cut applied AFTER tier × weekend uplift (round). Jun 21
+  // is outside the cut window, so it shows the clean weekend-uplift value.
+  assert.strictEqual(W.wcFloor('1BR', '2026-06-22'), 111); // weekday shoulder: 114 ×0.975 = 111
+  assert.strictEqual(W.wcFloor('1BR', '2026-06-24'), 121); // weekday game: 124 ×0.975 = 121
+  assert.strictEqual(W.wcFloor('1BR', '2026-06-21'), 143); // weekend game round(124*1.15)=143 (no cut on 6/21)
+  assert.strictEqual(W.wcFloor('1BR', '2026-06-26'), 111); // weekend base round(99*1.15)=114 ×0.975 = 111
+  assert.strictEqual(W.wcFloor('2BR', '2026-06-22'), 144); // weekday shoulder: 148 ×0.975 = 144
+  assert.strictEqual(W.wcFloor('2BR', '2026-06-21'), 185); // weekend game round(161*1.15)=185 (no cut on 6/21)
+  assert.strictEqual(W.wcFloor('2BR', '2026-06-26'), 144); // weekend base round(129*1.15)=148 ×0.975 = 144
 });
 
 check('floor override: Jun 13–20 → 1BR $72 / 2BR $109; outside range unchanged', () => {
@@ -42,7 +44,7 @@ check('floor override: Jun 13–20 → 1BR $72 / 2BR $109; outside range unchang
 });
 
 check('seed = current−7%, clamped >= floor, NEVER above current', () => {
-  assert.strictEqual(W.wcSeed(167, '1BR', '2026-06-22'), 155); // 167*.93=155.3 -> 155, > floor 114
+  assert.strictEqual(W.wcSeed(167, '1BR', '2026-06-22'), 155); // 167*.93=155.3 -> 155, > floor 111 (post-cut)
   assert.strictEqual(W.wcSeed(176, '1BR', '2026-06-24'), 164); // game weekday
   assert.strictEqual(W.wcSeed(225, '2BR', '2026-06-16'), 209); // 225*.93=209.25 -> 209
   // Jun 21 1BR: current 111, weekend-game floor 143 (>current) → never raised, holds 111
@@ -66,8 +68,8 @@ check('decay step: -$1/push <=7d (=-$3/day); 8-20d -$2/day via 2 slots; floor cl
   // 15 days out (8-20): drops at 9am & 3pm slots, NOT 7pm
   assert.strictEqual(W.wcDecayTarget(155, '1BR', '2026-06-22', 15, 9), 154);
   assert.strictEqual(W.wcDecayTarget(155, '1BR', '2026-06-22', 15, 19), 155); // 7pm: no drop
-  // floor clamp: at floor, stays at floor (never below)
-  assert.strictEqual(W.wcDecayTarget(114, '1BR', '2026-06-22', 6, 9), 114);
+  // floor clamp: at the post-cut floor ($111 on Jun 22–30), a step clamps — stays at floor (never below)
+  assert.strictEqual(W.wcDecayTarget(111, '1BR', '2026-06-22', 6, 9), 111);
   assert.strictEqual(W.wcDecayTarget(99, '2BR', '2026-06-22', 6, 9) >= W.wcFloor('2BR','2026-06-22'), true);
 });
 
