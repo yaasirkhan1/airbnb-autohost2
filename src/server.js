@@ -3081,7 +3081,7 @@ const SPANISH_DAYS   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Vierne
 const SPANISH_MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
 function tomorrowDateString() {
-  // "Tomorrow" in the cron's timezone (America/New_York), NOT UTC. At 9PM ET the
+  // "Tomorrow" in the cron's timezone (America/New_York), NOT UTC. At 10PM ET the
   // UTC date has already rolled to the next day, so the old toISOString() logic
   // targeted a day too far ahead. See src/cleaning-schedule.js.
   return tomorrowInTZ(new Date(), 'America/New_York');
@@ -3301,10 +3301,10 @@ async function sendCleaningSchedule() {
   return { ok: allOk, smsBody, entries: finalEntries.length, override: override || null, recipients: results };
 }
 
-// READ-ONLY view of a date's cleaning list — the SAME entries + host overrides the 9 PM cron would
+// READ-ONLY view of a date's cleaning list — the SAME entries + host overrides the 10 PM cron would
 // send to Veronica, but sends NO SMS and mutates NOTHING (no override expiry/persist). Powers the
 // Telegram "cleaning_status" query. The override store is loaded + pruned IN MEMORY for display only
-// (never saved), so viewing tonight's list can't expire an override the real 9 PM run still needs.
+// (never saved), so viewing tonight's list can't expire an override the real 10 PM run still needs.
 async function buildCleaningScheduleText(dateStr) {
   const spanishDate = formatSpanishDate(dateStr);
   const entries = [];
@@ -3324,7 +3324,7 @@ async function buildCleaningScheduleText(dateStr) {
 
 // POST /api/cleaning-override — host-set manual add/remove for one night's cleaning schedule.
 // Body: { action: 'add'|'remove', unit: '7-B', date?: 'YYYY-MM-DD' }  (date defaults to tomorrow,
-// i.e. tonight's 9 PM run). Recorded + persisted; merged into that night's run, then auto-expired.
+// i.e. tonight's 10 PM run). Recorded + persisted; merged into that night's run, then auto-expired.
 app.post('/api/cleaning-override', (req, res) => {
   const { action, unit, date, priority, deadline } = req.body || {};
   if (action !== 'add' && action !== 'remove') return res.status(400).json({ error: "action must be 'add' or 'remove'" });
@@ -3499,12 +3499,13 @@ app.listen(PORT, () => {
     });
   }, 3000);
 
-  // Nightly cleaning schedule — 9:00 PM Eastern every night
-  cron.schedule('0 21 * * *', () => {
-    console.log('[cleaning] Cron fired — 9:00 PM Eastern');
+  // Nightly cleaning schedule — 10:00 PM Eastern every night (moved from 9 PM so the
+  // 7 PM vacant-night extension offers have time to land before Veronica's list locks).
+  cron.schedule('0 22 * * *', () => {
+    console.log('[cleaning] Cron fired — 10:00 PM Eastern');
     sendCleaningSchedule().catch(e => console.error('[cleaning] Cron error:', e.message));
   }, { timezone: 'America/New_York' });
-  console.log('[cleaning] Cron scheduled — 9:00 PM Eastern daily');
+  console.log('[cleaning] Cron scheduled — 10:00 PM Eastern daily');
 
   // Morning check-in sweep — 8:00 AM Eastern (kept off the 9 AM pricing slot). For every guest
   // arriving TODAY who hasn't already been sent check-in instructions, send them (bound to that
