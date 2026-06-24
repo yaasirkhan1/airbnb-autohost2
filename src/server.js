@@ -1327,6 +1327,31 @@ async function sendConciergeEmail({ guestName, propertyId, resourceId, resourceT
   }
 }
 
+// Active entry / lock failure. Broadened from the original (locked out | key doesn't work |
+// can't open the door | lock isn't working | fob stopped) to ALSO catch door-code / keypad
+// malfunctions — the front-desk concierge classifier deliberately excludes these, so without
+// this they fall through to a generic reply instead of the instant lockout response.
+// Scoped to an ACTIVE failure: every branch requires a failure signal (won't/isn't/doesn't
+// work, broken, beeps red, won't open). A bare mention — "what's my door code?", "how does the
+// keypad work?", "is the code working?" — has no failure verb and never matches.
+const LOCKOUT_REGEX = new RegExp([
+  'locked?\\s*out',
+  'fob\\s+stopped',
+  // code / keypad / lock / key / fob + "(isn't|won't|doesn't|not|stopped) … work"
+  '\\b(?:door\\s*code|entry\\s*code|key\\s*pad|keypad|code|lock|key|fob)\\b[^.?!\\n]{0,16}(?:isn\'?t|is\\s*not|are\\s*not|aren\'?t|won\'?t|will\\s*not|wont|does\\s*not|doesn\'?t|not|stopped)\\s*work',
+  // code / keypad / lock / fob + broken / dead / malfunctioning / not responding
+  '\\b(?:door\\s*code|entry\\s*code|keypad|key\\s*pad|code|lock|fob)\\b[^.?!\\n]{0,16}(?:broken|malfunction(?:ing)?|dead|not\\s+responding)',
+  // keypad beeping / flashing red (or a red beep/flash signal)
+  'keypad[^.?!\\n]{0,20}red',
+  '(?:beep|flash|blink)(?:s|ing)?[^.?!\\n]{0,8}red',
+  // door won't / can't open or unlock
+  'door[^.?!\\n]{0,12}(?:won\'?t|wont|will\\s*not|can\'?t|cant|cannot|wouldn\'?t|doesn\'?t)[^.?!\\n]{0,12}(?:open|unlock|budge)',
+  // can't open/unlock the door / can't get the door open
+  'can\'?t[^.?!\\n]{0,20}(?:open|unlock)[^.?!\\n]{0,12}(?:door|unit|apartment|room|it)',
+  'can\'?t[^.?!\\n]{0,16}door[^.?!\\n]{0,12}(?:open|unlock)',
+  'can\'?t\\s+get\\s+(?:in|into\\s+the\\s+(?:unit|apartment|room|door)|through\\s+the\\s+door)',
+].join('|'), 'i');
+
 function detectHardcodedResponse(guestName, messageBody) {
   const b = messageBody.toLowerCase();
   const name = (guestName || 'there').split(' ')[0]; // first name only
@@ -1337,7 +1362,7 @@ function detectHardcodedResponse(guestName, messageBody) {
   }
 
   // Lockout / key not working — second-highest priority after concierge
-  if (/locked\s+out|key\s+doesn'?t\s+work|can'?t\s+open\s+the\s+door|lock\s+isn'?t\s+working|fob\s+stopped/.test(b)) {
+  if (LOCKOUT_REGEX.test(b)) {
     return {
       confident: true,
       reply: `Hi ${name}, I'm sorry about that! Please call or text 954-552-2122 right away and we'll get you in immediately. 🔑`,
