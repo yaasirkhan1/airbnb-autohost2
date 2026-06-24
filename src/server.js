@@ -27,6 +27,8 @@ const { ATLANTA_PROPERTY_IDS, isManaged, filterManaged } = require('./managed-pr
 const { resolveReplyTarget } = require('./reply-target');
 const pricingAdjust = require('./pricing-adjust');
 const pricingFreeze = require('./pricing-freeze');
+const decayStatus = require('./decay-status');
+const pricingConfig = require('./pricing-config.json');
 const { isNightBooked } = require('./pricing-guards');
 const telegramBot = require('./telegram-bot');
 const telegramIntent = require('./telegram-intent');
@@ -3625,6 +3627,41 @@ app.listen(PORT, () => {
         const { ok, json } = await callLocalApi('POST', '/api/pricing/adjust', { pct: intent.pct, start: intent.start, end: intent.end, units: intent.units });
         if (!ok) return `⚠️ Price adjust failed: ${json.error || 'error'}`;
         return `✅ ${intent.pct > 0 ? 'Raised' : 'Lowered'} prices ${Math.abs(intent.pct)}% ${intent.start}→${intent.end}: ${json.totalChanged} night(s) changed. To undo: "revert last price change" (id ${json.recordId}).`;
+      },
+      pricing_status: async (intent) => {
+        // READ-ONLY: report decay/freeze state + why each night in the range would/wouldn't decay.
+        const t = today();
+        const start = intent.start || t;
+        const end = intent.end || pricingFreeze.addDays(t, 7);
+        const allLabels = Object.keys(UNIT_LABEL_TO_ID);
+        const units = (intent.units === 'all' || !Array.isArray(intent.units) || !intent.units.length)
+          ? allLabels : intent.units;
+        // Best-effort live calendar (price + availability) via the internal read-only endpoint.
+        // On any failure, fall back to the fence-only status (still answers "would it decay").
+        let calendar = null;
+        try {
+          const { ok, json } = await callLocalApi('GET', `/api/pricing?start=${start}&end=${end}`);
+          if (ok && Array.isArray(json.properties)) {
+            calendar = {};
+            for (const p of json.properties) {
+              const label = ID_TO_LABEL[p.id];
+              if (!label || !units.includes(label)) continue;
+              const floor = pricingConfig.units?.[label]?.floor ?? null;
+              calendar[label] = {};
+              for (const d of (p.days || [])) {
+                if (!d.date) continue;
+                calendar[label][d.date] = {
+                  price: typeof d.price === 'number' ? Math.round(d.price) : null,
+                  floor,
+                  booked: d.available === false,
+                };
+              }
+            }
+          }
+        } catch { /* fence-only fallback */ }
+        const store = pricingFreeze.loadStore();
+        const status = decayStatus.buildDecayStatus({ start, end, units, todayYmd: t, freezeStore: store, calendar });
+        return `📊 ${status.text}\n\n(read-only — nothing was changed)`;
       },
       pricing_decay_freeze: async (intent) => {
         const { ok, json } = await callLocalApi('POST', '/api/pricing/decay-freeze', { enable: intent.enable, days: intent.days });

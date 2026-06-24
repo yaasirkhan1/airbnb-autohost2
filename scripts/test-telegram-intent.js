@@ -125,6 +125,17 @@ check('extractJson pulls the object from fenced/preambled text, null when truly 
   assert.strictEqual(I.extractJson(''), null);
 });
 
+check('pricing_status (VIEW) → read-only, optional range + units, NOT adjust/freeze', () => {
+  // bare "is decay frozen?" → no range, all units
+  const a = N({ action: 'pricing_status', confidence: 0.9 });
+  assert.deepStrictEqual([a.action, a.start, a.end, a.units], ['pricing_status', null, null, 'all']);
+  // "why aren't July 1-7 prices changing for 7-B" → range + canonicalized unit
+  const b = N({ action: 'pricing_status', confidence: 0.9, start: '2026-07-01', end: '2026-07-07', units: ['7b'] });
+  assert.deepStrictEqual([b.action, b.start, b.end, b.units], ['pricing_status', '2026-07-01', '2026-07-07', ['7-B']]);
+  // junk unit list falls back to all (never an empty target)
+  assert.strictEqual(N({ action: 'pricing_status', confidence: 0.9, units: ['zzz'] }).units, 'all');
+});
+
 check('parseIntent runs the model output through normalize (Haiku stub)', async () => {
   const fakeClaude = async (model, _sys, _user) => {
     assert.strictEqual(model, I.PARSE_MODEL); // must use Haiku

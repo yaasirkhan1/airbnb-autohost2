@@ -14,6 +14,7 @@ const ACTIONS = new Set([
   'guest_message',       // compose + send a guest message (CONFIRM before send)
   'pricing_adjust',      // % price change over a date range (CONFIRM before apply)
   'pricing_decay_freeze',// freeze/unfreeze decay for a rolling N-day window (CONFIRM before apply)
+  'pricing_status',      // VIEW decay/freeze state + why dates would/wouldn't decay (read-only)
   'clarify',             // not confidently parseable → ask the host
 ]);
 
@@ -34,6 +35,7 @@ Pick exactly one "action" from this list and include its fields:
 - "guest_message": host wants to message a guest in their own words. Fields "guest": guest name/identifier, "gist": what the host wants conveyed (you do NOT write the message here).
 - "pricing_adjust": change prices by a percentage over a date range. Fields "pct": signed number (lower 5% → -5, raise 10% → 10), "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", "units": "all" OR array of unit labels.
 - "pricing_decay_freeze": freeze or unfreeze automated price decay for a rolling window of N days from today. Fields "enable": true to FREEZE (turn decay OFF), false to UNFREEZE (turn decay back ON); "days": integer window length (default 7 when freezing).
+- "pricing_status": a READ-ONLY check of the decay/pricing state — sends nothing, changes nothing. Use for "what's the current decay setting", "is decay frozen", "is the freeze on", "why aren't prices changing for <dates>", "show decay status [for <dates>]", "what's the pricing doing for <dates>". Optional fields "start":"YYYY-MM-DD" and "end":"YYYY-MM-DD" (a date range to explain — default the next 7 days), and "units": "all" OR array of unit labels (default all). This is a question about WHY prices are/aren't moving — never pricing_adjust or pricing_decay_freeze (those CHANGE things).
 - "clarify": you cannot confidently determine the command, or required fields are missing/ambiguous. Field "reason": a short question for the host.
 
 Always include "confidence": 0.0–1.0. If below 0.6, use action "clarify". Resolve relative dates using the provided TODAY. Never invent a unit not in the list.`;
@@ -131,6 +133,14 @@ function normalizeIntent(raw, { minConfidence = 0.6 } = {}) {
       let days = parseInt(o.days, 10);
       if (!Number.isInteger(days) || days < 1) days = 7;
       return { action: 'pricing_decay_freeze', enable, days, confidence };
+    }
+    case 'pricing_status': {
+      let units = o.units;
+      if (units !== 'all') {
+        units = (Array.isArray(units) ? units : [units]).map(canonUnit).filter(Boolean);
+        if (!units.length) units = 'all';
+      }
+      return { action: 'pricing_status', start: validDate(o.start) || null, end: validDate(o.end) || null, units, confidence };
     }
     default:
       return clarify(o.reason || 'Can you clarify what you’d like me to do?');
