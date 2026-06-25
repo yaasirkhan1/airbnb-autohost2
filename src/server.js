@@ -32,6 +32,7 @@ const pricingConfig = require('./pricing-config.json');
 const { isNightBooked } = require('./pricing-guards');
 const telegramBot = require('./telegram-bot');
 const telegramIntent = require('./telegram-intent');
+const extensionOffer = require('./extension-offer');
 const { loadKnowledgeBase } = require('./knowledge-base');
 const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
 const { loadRestaurantKB, isRestaurantQuestion, buildRestaurantSection } = require('./restaurant-knowledge');
@@ -660,6 +661,13 @@ async function processNewMessages(resourceId, resourceType, messagesPath, proper
         console.log(`[poll/${tag}] 💸 Money/refund complaint — escalated to host, NO auto-reply (pre-concierge)`);
         notifyHost({ guestName, messageBody: body, propertyName, conversationKey: resourceId, resourceId, resourceType }).catch(console.error);
         continue;
+      }
+
+      // Extension-offer acceptance: if this reservation thread has a pending 7 PM offer, a clear
+      // "yes" pings the host (manual Alter Reservation) and suppresses the generic reply. Guarded.
+      if (resourceType === 'reservation') {
+        try { if (await handleExtensionOfferReply(resourceId, body)) continue; }
+        catch (e) { console.error(`[ext-offer] poll reply-handler error (ignored): ${e.message}`); }
       }
 
       // Concierge detection: regex fast-path; AI classifier consulted only on a regex miss.
@@ -2014,6 +2022,13 @@ app.post('/webhook/hospitable', (req, res, next) => {
     return;
   }
 
+  // Extension-offer acceptance: a clear "yes" on a thread with a pending 7 PM offer pings the host
+  // and suppresses the generic reply. Guarded — never breaks the webhook handler.
+  if (replyResourceType === 'reservation') {
+    try { if (await handleExtensionOfferReply(replyResourceId, messageBody)) return; }
+    catch (e) { console.error(`[ext-offer] webhook reply-handler error (ignored): ${e.message}`); }
+  }
+
   // Concierge detection: regex fast-path; AI classifier consulted only on a regex miss.
   let conciergeHit = conciergeRegexHit;
   let conciergeVia = conciergeRegexHit ? 'regex' : '';
@@ -3325,6 +3340,110 @@ async function buildCleaningScheduleText(dateStr) {
   return { text: buildScheduleSMS(finalEntries, spanishDate), count: finalEntries.length, date: dateStr, override: override || null };
 }
 
+// ─── Vacant-night extension offers (7 PM ET) ──────────────────────────────────
+// Ping the host on Telegram (the bot's owner chat). Falls back to host SMS if Telegram isn't
+// configured or the send fails, so a "guest accepted" alert is never silently lost. Never throws.
+async function notifyOwnerTelegram(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN, ownerId = process.env.TELEGRAM_OWNER_ID;
+  if (!token || !ownerId) { console.warn('[ext-offer] Telegram not configured — host alert via SMS'); return notifyHostRaw(text); }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: ownerId, text }),
+    });
+    if (!res.ok) throw new Error(`Telegram ${res.status}: ${(await res.text()).slice(0, 150)}`);
+    console.log(`[ext-offer] host pinged on Telegram: "${text.slice(0, 80)}"`);
+  } catch (e) {
+    console.error(`[ext-offer] Telegram ping FAILED (${e.message}) — falling back to SMS`);
+    return notifyHostRaw(text);
+  }
+}
+
+// Called for every incoming GUEST message on a reservation thread (poll + webhook). If that thread
+// has a PENDING extension offer, classify the reply: a clear YES → ping the host to do the Alter
+// Reservation by hand + mark accepted + suppress the generic auto-reply (return true). A NO → mark
+// declined, no ping, let the normal responder reply (return false). A question/unclear → leave the
+// offer open (return false). Guarded by the callers; returns false on anything unexpected.
+async function handleExtensionOfferReply(reservationId, body) {
+  const store = extensionOffer.loadStore();
+  const offer = extensionOffer.getOffer(store, reservationId);
+  if (!offer || offer.status !== 'pending') return false;
+  const d = extensionOffer.decideOnReply(offer, body);
+  if (d.status && d.status !== 'pending') extensionOffer.saveStore(extensionOffer.resolveOffer(store, reservationId, d.status));
+  if (d.ping) {
+    await notifyOwnerTelegram(
+      `🏷️ EXTENSION ACCEPTED\n${offer.guestName} (${offer.unit}) said YES to the extra night (${offer.date}) at $${offer.price}.\n➡️ Do the Alter Reservation in Hospitable manually to add the night + charge.`);
+    console.log(`[ext-offer] ACCEPTED — ${offer.unit} ${offer.guestName} $${offer.price} — host pinged`);
+  } else if (d.status === 'declined') {
+    console.log(`[ext-offer] declined — ${offer.unit} ${offer.guestName}`);
+  }
+  return !!d.suppress;
+}
+
+// The 7 PM sweep. Pass 1 scans all units (reservations + calendar) → eligibility + vacancy count.
+// Then, per eligible unit, RE-CONFIRM availability + the wrong-thread guard atomically RIGHT BEFORE
+// sending (a night booked between scan and send is never offered). dryRun=true returns the plan and
+// sends nothing. Returns { date, vacantCount, offers: [...] }.
+async function runExtensionOfferSweep(dryRun = false) {
+  const tomorrow = tomorrowDateString();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Pass 1 — scan
+  const rows = [];
+  for (const u of CLEANING_UNITS) {
+    try {
+      const { outgoing, incoming } = await getReservationsForDate(u.id, tomorrow);
+      const cal = await fetchCalendarEntries(u.id, tomorrow, tomorrow);
+      const day = cal.find(e => e.date === tomorrow) || null;
+      rows.push({ u, outgoing, incoming, available: !!(day && !day.booked), price: day ? day.current : null });
+    } catch (e) {
+      console.error(`[ext-offer] scan failed for ${u.label}: ${e.message}`);
+      rows.push({ u, outgoing: [], incoming: [], available: false, price: null });
+    }
+    await sleep(150);
+  }
+  const vacantCount = rows.filter(r => r.available).length;
+  console.log(`[ext-offer] ${tomorrow}: ${vacantCount} unit(s) vacant that night → markup +$${extensionOffer.scaleMarkup(vacantCount)}`);
+
+  const offers = [];
+  for (const row of rows) {
+    if (!(extensionOffer.isEligible(row) && row.available)) continue;
+    const guestName = reservationGuestName(row.outgoing[0]);
+    const firstName = extensionOffer.firstToken(guestName);
+    if (row.price == null) { offers.push({ unit: row.u.label, guest: guestName, skipped: 'no calendar price' }); continue; }
+    const price = extensionOffer.computeQuote(row.price, vacantCount);
+    const base = { unit: row.u.label, unitId: row.u.id, guest: guestName, firstName, reservationId: row.outgoing[0].id,
+                   calendarPrice: row.price, vacantCount, markup: extensionOffer.scaleMarkup(vacantCount), price, date: tomorrow };
+
+    if (dryRun) { offers.push({ ...base, message: extensionOffer.renderOffer(firstName, price) }); continue; }
+
+    // Pass 2 — atomic re-confirm immediately before send
+    let recheck, day2;
+    try {
+      recheck = await getReservationsForDate(row.u.id, tomorrow);
+      const cal2 = await fetchCalendarEntries(row.u.id, tomorrow, tomorrow);
+      day2 = cal2.find(e => e.date === tomorrow) || null;
+    } catch (e) { offers.push({ ...base, skipped: `recheck failed: ${e.message}` }); continue; }
+    if (!day2 || day2.booked) { offers.push({ ...base, skipped: 'night booked after scan — not offered' }); continue; }
+    if ((recheck.incoming || []).length) { offers.push({ ...base, skipped: 'check-in appeared (turnover) — not offered' }); continue; }
+    const match = extensionOffer.matchOfferReservation(recheck.outgoing, firstName, reservationGuestName);
+    if (!match.ok) { offers.push({ ...base, skipped: `guard: ${match.reason}` }); continue; }
+
+    try {
+      const send = await sendToHospitable(match.reservation.id, extensionOffer.renderOffer(firstName, price), 'reservation');
+      if (send && send.paused) { offers.push({ ...base, skipped: 'AUTOSEND off' }); continue; }
+      const todayET = dateInTimeZone(new Date(), 'America/New_York');
+      const store = extensionOffer.recordOffer(extensionOffer.loadStore(), match.reservation.id,
+        { guestName, unit: row.u.label, unitId: row.u.id, price, calendarPrice: row.price, date: tomorrow, status: 'pending', sentAt: new Date().toISOString() });
+      extensionOffer.saveStore(extensionOffer.pruneOffers(store, todayET));
+      console.log(`[ext-offer] SENT → ${row.u.label} ${guestName} $${price}`);
+      offers.push({ ...base, sent: true });
+    } catch (e) { offers.push({ ...base, skipped: `send failed: ${e.message}` }); }
+    await sleep(300);
+  }
+  return { date: tomorrow, vacantCount, offers };
+}
+
 // POST /api/cleaning-override — host-set manual add/remove for one night's cleaning schedule.
 // Body: { action: 'add'|'remove', unit: '7-B', date?: 'YYYY-MM-DD' }  (date defaults to tomorrow,
 // i.e. tonight's 10 PM run). Recorded + persisted; merged into that night's run, then auto-expired.
@@ -3538,6 +3657,18 @@ app.listen(PORT, () => {
     runMorningCheckinSweep().catch(e => console.error('[checkin] sweep error:', e.message));
   }, { timezone: 'America/New_York' });
   console.log('[checkin] Morning check-in sweep scheduled — 8:00 AM Eastern daily');
+
+  // Vacant-night extension offers — 7:00 PM Eastern. For every guest checking out TOMORROW whose
+  // unit's checkout-night is vacant (no same-day turnover), send a one-night extension offer priced
+  // at the live calendar rate + a vacancy-scaled markup; vacancy is re-confirmed atomically right
+  // before each send. A guest "yes" pings the host to do the Alter Reservation by hand.
+  cron.schedule('0 19 * * *', () => {
+    console.log('[ext-offer] Cron fired — 7:00 PM Eastern');
+    runExtensionOfferSweep(false)
+      .then(r => console.log(`[ext-offer] sweep done — ${r.offers.filter(o => o.sent).length} sent, ${r.vacantCount} vacant (${r.date})`))
+      .catch(e => console.error('[ext-offer] sweep error:', e.message));
+  }, { timezone: 'America/New_York' });
+  console.log('[ext-offer] Extension-offer sweep scheduled — 7:00 PM Eastern daily');
 
   // Daily pricing run — 9:00 AM Eastern, 23-N ONLY (--confirm --batch 30, no override-sanity).
   // Spawns the engine as a child process so its exit can't take the server down. Set
