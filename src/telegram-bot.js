@@ -13,6 +13,7 @@
 // network. `start` is the only piece that touches the Telegram HTTP API.
 const { requiresConfirmation, confirmText, isAffirmative, isNegative } = require('./telegram-actions');
 const audience = require('./audience');   // pure helpers only (recipient-edit parsing, describe)
+const scanner = require('./opportunity-scanner');   // pure helpers (digest decision parse/apply/format)
 
 // Extract the numeric sender id from an update (message OR edited_message), or null.
 function senderId(update) {
@@ -90,6 +91,12 @@ async function routeOwnerMessage(text, chatId, deps) {
     // Broadcast draft pending: a non-yes/no reply is an EDIT — revise the draft and re-show (still no send).
     if (held.kind === 'broadcast_message' && deps.composeCampaign) return handleBroadcastEdit(held, text, chatId, deps);
     return { replies: [`You have a pending ${held.kind.replace('_', ' ')} awaiting confirmation. Reply "yes" to go ahead or "no" to cancel.`] };
+  }
+
+  // ── A morning opportunity digest is open for review → route approve/skip/override/send. ──
+  if (deps.activeDigest) {
+    const digest = deps.activeDigest(chatId);
+    if (digest) return handleDigestReply(digest, text, chatId, deps);
   }
 
   // ── Reach-back: a question about something OLD → search the COLD archive, answer from it, drop it. ──
@@ -176,6 +183,29 @@ async function handleBroadcastEdit(held, editText, chatId, deps) {
   return { replies: [broadcastPreview(describe, members, message, tag)] };
 }
 
+// Opportunity digest review: parse the host's decision, apply to the pending items, persist, and
+// re-show — or on "send" run the guarded send of approved items. Same-guest stacking blocks "send".
+async function handleDigestReply(digest, text, chatId, deps) {
+  const ops = scanner.parseDigestDecision(text);
+  if (!ops.length) return { replies: [`You're reviewing today's digest. Reply "approve 1 2", "skip 3", "1 at $85", "approve all", "send", or "cancel".`] };
+  if (ops.some(o => o.op === 'cancel')) { deps.clearDigest(chatId); return { replies: ['Okay — digest cleared, nothing sent.'] }; }
+  const send = ops.some(o => o.op === 'send');
+  const items = scanner.applyDecisions(digest.items, ops.filter(o => o.op !== 'send'));
+  deps.saveDigest(chatId, { ...digest, items });
+  if (send) {
+    const conflicts = scanner.sameGuestConflicts(items);
+    if (conflicts.length) {
+      return { replies: [`⚠️ That would send the same guest two upsells: ${conflicts.map(c => `${c.firstName} (#${c.items.join(', #')})`).join('; ')}. Skip one of each, then "send".`] };
+    }
+    const sendable = scanner.approvedSendable(items);
+    if (!sendable.length) return { replies: ['Nothing approved yet — e.g. "approve 1" or "1 at $85", then "send".'] };
+    const out = await deps.sendDigest(chatId, sendable);
+    deps.clearDigest(chatId);
+    return { replies: [out] };
+  }
+  return { replies: [scanner.formatDigest(items, digest.date)] };
+}
+
 function executePending(held, deps) {
   if (held.kind === 'guest_message') return deps.handlers.guest_message_send({ guest: held.guest, text: held.text });
   if (held.kind === 'broadcast_message') return deps.handlers.broadcast_send({ members: held.members, message: held.message });
@@ -226,4 +256,4 @@ async function start(deps) {
   })();
 }
 
-module.exports = { isOwner, isOwnerDM, chatId, ownerTag, senderId, handleUpdate, routeOwnerMessage, handleGuestDraft, handleBroadcastDraft, handleBroadcastEdit, broadcastPreview, executePending, start };
+module.exports = { isOwner, isOwnerDM, chatId, ownerTag, senderId, handleUpdate, routeOwnerMessage, handleGuestDraft, handleBroadcastDraft, handleBroadcastEdit, broadcastPreview, handleDigestReply, executePending, start };

@@ -35,6 +35,8 @@ const telegramIntent = require('./telegram-intent');
 const telegramMemory = require('./telegram-memory');
 const audienceLib = require('./audience');
 const extensionOffer = require('./extension-offer');
+const oppScanner = require('./opportunity-scanner');
+const oppDigestStore = require('./opportunity-digest-store');
 const { loadKnowledgeBase } = require('./knowledge-base');
 const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
 const { loadRestaurantKB, isRestaurantQuestion, buildRestaurantSection } = require('./restaurant-knowledge');
@@ -2587,6 +2589,36 @@ async function composeCampaign({ goal, audienceDesc, prior, edit }) {
   return String(text || '').trim();
 }
 
+// GOVERNING TONE for the whole opportunity digest. NOT a sales voice — attentive, high-end
+// hospitality: a thoughtful host who anticipated something that would make the stay better and
+// quietly arranged it. Leads with the guest's comfort, presents the option as an already-arranged
+// courtesy, and makes "no thank you" feel completely comfortable.
+const OPPORTUNITY_TONE_SYSTEM = `You are Cal, host of upscale downtown Atlanta apartments, writing a brief, private message to a current or arriving guest. This is NOT a sales message — it's a gesture of attentive, high-end hospitality. The feeling to create: a thoughtful host who noticed something that would make their stay easier and quietly took care of it.
+
+Voice & rules:
+- Lead with the GUEST'S comfort or convenience, never the offer. Open by anticipating their need — "I noticed…", "I wanted to make sure…", "So you're not rushed…".
+- Present the option as a courtesy already arranged and effortless to accept — never as something you're selling or persuading them toward.
+- State the price plainly and exactly once, as a simple detail — no flourish, no framing, no "only".
+- A "no, thank you" must feel completely comfortable: NO urgency, NO scarcity (unless genuinely true and stated as plain fact), no FOMO, no guilt, no hard close, no "let me know soon".
+- Warm, gracious, understated, concise. High-end hospitality, not marketing. They should feel looked-after, not marketed to — and feel that way whether or not they accept.
+- Every message should leave them with a better impression of the stay regardless of their answer.
+- Use the literal token {first_name}. Plain text only — no markdown, no subject line. Sign off as "Cal".
+
+Output ONLY the message text.`;
+// Per-type situational brief, written as anticipated-need context (not a pitch) for the tone prompt.
+function opportunityBrief(it) {
+  if (it.type === 'extension') return `Their reservation ends tomorrow (${it.dates.night} is their last night), and the apartment happens to be free that next night. Anticipate that packing up and moving on can be a hassle — offer them the ease of simply staying one more relaxed night, nothing to repack or change.`;
+  if (it.type === 'early_checkin') return `They arrive today and the apartment is already ready ahead of the usual 4 PM check-in. Anticipate the tiredness of travel — offer to let them settle in early, from 1 PM, so they can drop their bags and relax sooner.`;
+  if (it.type === 'late_checkout') return `They check out tomorrow and no one needs the apartment after them. Anticipate a rushed last morning — offer an unhurried late checkout until 1:30 PM so their final morning is calm.`;
+  if (it.type === 'gap_fill') return `There's an open night (${it.dates.night}) in the middle of/adjacent to their stay. Offer the ease of staying continuously through it rather than any gap.`;
+  return `An optional courtesy for their stay.`;
+}
+async function composeOpportunityMessage(it) {
+  const brief = `Situation (anticipated need — write from this, do not quote it): ${opportunityBrief(it)}\nUnit: ${it.unit}\nPrice to mention plainly, once: $${it.chosen}\nWrite the message in the attentive-host voice. Use {first_name}.`;
+  const text = await callClaude(OPPORTUNITY_TONE_SYSTEM, brief, 500, 'claude-sonnet-4-6');
+  return String(text || '').trim();
+}
+
 // Resolve a natural-language audience phrase to actual reservation threads. Server-derived: the host
 // describes WHO; we map to real reservations (never trust guest-supplied identity). Returns
 // { selector, members:[{reservationId,guestName,firstName,unit,propertyId}], describe, reason? }.
@@ -3507,6 +3539,61 @@ async function runExtensionOfferSweep(dryRun = false) {
   return { date: tomorrow, vacantCount, offers };
 }
 
+// ─── Opportunity digest (Phase 0): morning scan → host review → guarded send ───
+// Build the scanner's per-unit snapshot from Hospitable (reservations + calendar over the window).
+async function buildUnitSnapshot(label, id, todayStr, windowDays = 10) {
+  const endStr = oppScanner.addDays(todayStr, windowDays);
+  let reservations = [];
+  try {
+    const data = await hospGet(`/reservations?properties[]=${id}&start_date=${oppScanner.addDays(todayStr, -2)}&end_date=${endStr}&per_page=100&include=guest`);
+    reservations = parseReservations(data).filter(isActiveReservation).map(r => {
+      const gn = reservationGuestName(r);
+      return { id: r.id, guest: gn, firstName: (gn || '').trim().split(/\s+/)[0],
+        checkIn: String((r.check_in || r.checkin || r.arrival_date || r.start_date) || '').slice(0, 10),
+        checkOut: String((r.check_out || r.checkout || r.departure_date || r.end_date) || '').slice(0, 10) };
+    });
+  } catch (e) { console.error(`[digest] reservations fetch failed ${label}: ${e.message}`); }
+  const calendar = {};
+  try { for (const e of await fetchCalendarEntries(id, todayStr, endStr)) calendar[e.date] = { available: !e.booked, price: e.current }; }
+  catch (e) { console.error(`[digest] calendar fetch failed ${label}: ${e.message}`); }
+  return { unit: label, propertyId: id, today: todayStr, tomorrow: oppScanner.addDays(todayStr, 1), reservations, calendar };
+}
+
+// Scan all 7 units → priced, indexed digest items. vacantCount (extension markup) = units whose
+// tomorrow night is vacant.
+async function runOpportunityScan() {
+  const todayStr = dateInTimeZone(new Date(), 'America/New_York');
+  const snaps = [];
+  for (const [label, id] of Object.entries(UNIT_LABEL_TO_ID)) { snaps.push(await buildUnitSnapshot(label, id, todayStr)); await new Promise(r => setTimeout(r, 150)); }
+  const vacantCount = snaps.filter(u => oppScanner.nightVacant(u, u.tomorrow)).length;
+  const opps = snaps.flatMap(u => oppScanner.scanUnit(u));
+  return { date: oppScanner.addDays(todayStr, 1), items: oppScanner.buildDigestItems(opps, { vacantCount }), vacantCount };
+}
+
+// Send approved digest items: compose each in the attentive service-first opportunity voice (NOT the
+// sales composer), personalize, send to that guest's OWN thread (per-thread guard = item.reservationId
+// + firstName). Extension sends are recorded in the extension-offer store so an "are you in?"
+// acceptance still pings the host.
+async function sendDigestItems(items) {
+  let sent = 0; const issues = [];
+  for (const it of items) {
+    try {
+      const msg = await composeOpportunityMessage(it);
+      const r = await sendToHospitable(it.reservationId, audienceLib.personalize(msg, it.firstName), 'reservation');
+      if (r && r.paused) { issues.push(`${it.firstName}: AUTOSEND off`); continue; }
+      if (it.type === 'extension') {
+        const todayET = dateInTimeZone(new Date(), 'America/New_York');
+        const store = extensionOffer.recordOffer(extensionOffer.loadStore(), it.reservationId,
+          { guestName: it.guest, unit: it.unit, price: it.chosen, date: it.dates.night, status: 'pending', sentAt: new Date().toISOString() });
+        extensionOffer.saveStore(extensionOffer.pruneOffers(store, todayET));
+      }
+      sent++;
+    } catch (e) { issues.push(`${it.firstName}: ${e.message}`); }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  return `✅ Sent ${sent}/${items.length} offer(s)${issues.length ? ` (issues: ${issues.join('; ')})` : ''}.`;
+}
+
 // POST /api/cleaning-override — host-set manual add/remove for one night's cleaning schedule.
 // Body: { action: 'add'|'remove', unit: '7-B', date?: 'YYYY-MM-DD' }  (date defaults to tomorrow,
 // i.e. tonight's 10 PM run). Recorded + persisted; merged into that night's run, then auto-expired.
@@ -3721,17 +3808,24 @@ app.listen(PORT, () => {
   }, { timezone: 'America/New_York' });
   console.log('[checkin] Morning check-in sweep scheduled — 8:00 AM Eastern daily');
 
-  // Vacant-night extension offers — 7:00 PM Eastern. For every guest checking out TOMORROW whose
-  // unit's checkout-night is vacant (no same-day turnover), send a one-night extension offer priced
-  // at the live calendar rate + a vacancy-scaled markup; vacancy is re-confirmed atomically right
-  // before each send. A guest "yes" pings the host to do the Alter Reservation by hand.
-  cron.schedule('0 19 * * *', () => {
-    console.log('[ext-offer] Cron fired — 7:00 PM Eastern');
-    runExtensionOfferSweep(false)
-      .then(r => console.log(`[ext-offer] sweep done — ${r.offers.filter(o => o.sent).length} sent, ${r.vacantCount} vacant (${r.date})`))
-      .catch(e => console.error('[ext-offer] sweep error:', e.message));
+  // Opportunity digest — 8:30 AM Eastern (between the 8 AM check-in sweep and 9 AM pricing). Scans
+  // all 7 units for extension / early-checkin / late-checkout / gap-fill opportunities and posts a
+  // REVIEW-FIRST digest to the host on Telegram; nothing reaches guests until the host approves +
+  // "send". This REPLACES the old 7 PM auto-send extension sweep (runExtensionOfferSweep stays
+  // available for the dry-run script, but no longer fires on its own).
+  cron.schedule('30 8 * * *', () => {
+    console.log('[digest] Cron fired — 8:30 AM Eastern opportunity scan');
+    const ownerId = process.env.TELEGRAM_OWNER_ID;
+    runOpportunityScan()
+      .then(async ({ date, items }) => {
+        if (!items.length) { console.log('[digest] no opportunities today'); return; }
+        if (ownerId) oppDigestStore.set(ownerId, { date, items });
+        await notifyOwnerTelegram(oppScanner.formatDigest(items, date));
+        console.log(`[digest] posted ${items.length} opportunities for ${date}`);
+      })
+      .catch(e => console.error('[digest] scan error:', e.message));
   }, { timezone: 'America/New_York' });
-  console.log('[ext-offer] Extension-offer sweep scheduled — 7:00 PM Eastern daily');
+  console.log('[digest] Opportunity digest scheduled — 8:30 AM Eastern daily (review-first; replaces 7 PM auto-send)');
 
   // Daily pricing run — 9:00 AM Eastern, 23-N ONLY (--confirm --batch 30, no override-sanity).
   // Spawns the engine as a child process so its exit can't take the server down. Set
@@ -3897,6 +3991,11 @@ app.listen(PORT, () => {
       composeCampaign,
       // Resolve added units (e.g. "also add 7-B") to in-house threads, reusing the audience resolver.
       resolveUnits: async (units) => (await resolveAudience((units || []).join(' '))).members,
+      // Opportunity digest review (Phase 0): the bot reads/writes the persisted digest + sends approved items.
+      activeDigest: (chatId) => oppDigestStore.get(chatId),
+      saveDigest: (chatId, digest) => oppDigestStore.set(chatId, digest),
+      clearDigest: (chatId) => oppDigestStore.clear(chatId),
+      sendDigest: (chatId, sendable) => sendDigestItems(sendable),
       handlers,
       // ── Two-layer memory (persisted to STATE_DIR; see telegram-memory.js) ──
       getHistory: (chatId) => telegramMemory.getHistory(chatId),
