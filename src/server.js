@@ -33,6 +33,7 @@ const { isNightBooked } = require('./pricing-guards');
 const telegramBot = require('./telegram-bot');
 const telegramIntent = require('./telegram-intent');
 const telegramMemory = require('./telegram-memory');
+const audienceLib = require('./audience');
 const extensionOffer = require('./extension-offer');
 const { loadKnowledgeBase } = require('./knowledge-base');
 const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
@@ -2561,6 +2562,67 @@ async function composeGuestMessage({ guest, gist }) {
   return String(text || '').trim();
 }
 
+// Persuasive broadcast composer — ONE message for an audience, personalized per recipient via the
+// {first_name} token. The quality bar lives here: warm host voice, a real hook, situation-specific
+// detail (event / unit / timing / price), and — when it's a sell — honest Hormozi-style angles
+// (scarcity, value framing, reduced friction, a soft deadline) WITHOUT ever being pushy or risking
+// the review. Output is the message text only, with {first_name} where the guest's name goes.
+const GUEST_CAMPAIGN_SYSTEM = `You are Cal, the warm, attentive host of upscale downtown Atlanta Airbnb apartments. Write ONE short message to be sent to a group of guests (each will get it personalized by first name).
+
+Make it genuinely well-crafted, not generic filler:
+- Open with a warm, personal hook using {first_name} — put the literal token {first_name} where the name goes.
+- Be specific to the situation: weave in the actual event, unit, timing, and price the host gives you. No vague boilerplate.
+- When it's an offer/sell, persuade with honest hospitality salesmanship: lead with the guest's benefit and the experience; frame the value and the price attractively (state the real price; if it's a discount, frame the saving); use light, TRUE scarcity or a soft deadline only if real; reduce friction ("no need to repack / change anything"). Never invent urgency or scarcity.
+- Tone: warm, gracious, confident, concise. NEVER pushy, salesy-aggressive, or guilt-trippy — it must never put the stay or the review at risk. A "no" should feel completely fine.
+- Plain text only — no markdown, no subject line, no preamble. Sign off as "Cal".
+
+Output ONLY the message text.`;
+async function composeCampaign({ goal, audienceDesc, prior, edit }) {
+  let user = `Audience: ${audienceDesc}\nGoal / what to convey (include any offer, price, event, timing): ${goal}\n`;
+  if (prior && edit) {
+    user += `\nCurrent draft:\n"""${prior}"""\n\nThe host wants this change: ${edit}\nRewrite the message applying that change while keeping what already works.\n`;
+  }
+  user += `\nWrite ONE message. Use the literal token {first_name} for the guest's name. Output ONLY the message text.`;
+  const text = await callClaude(GUEST_CAMPAIGN_SYSTEM, user, 600, 'claude-sonnet-4-6');
+  return String(text || '').trim();
+}
+
+// Resolve a natural-language audience phrase to actual reservation threads. Server-derived: the host
+// describes WHO; we map to real reservations (never trust guest-supplied identity). Returns
+// { selector, members:[{reservationId,guestName,firstName,unit,propertyId}], describe, reason? }.
+async function resolveAudience(rawPhrase) {
+  const selector = audienceLib.parseAudience(rawPhrase);
+  if (!selector) return { members: [], reason: `I'm not sure who "${rawPhrase}" means — try "today's arrivals", "guests in 4-L and 18-A", "everyone checking out tomorrow", or "current guests".` };
+  const todayStr = dateInTimeZone(new Date(), 'America/New_York');
+  const tomorrowStr = tomorrowDateString();
+  const members = [];
+  const add = (r, id, label) => {
+    const n = reservationGuestName(r);
+    if (r && r.id && n) members.push({ reservationId: r.id, guestName: n, firstName: n.trim().split(/\s+/)[0], unit: label, propertyId: id });
+  };
+  const inHouse = (r) => {
+    const ci = reservationCheckin(r), co = String((r.check_out || r.checkout || r.departure_date || r.end_date) || '').slice(0, 10);
+    return ci && ci <= todayStr && todayStr < co;
+  };
+  const activeFor = async (id) => {
+    try { return parseReservations(await hospGet(`/reservations?properties[]=${id}&per_page=40&include=guest`)).filter(isActiveReservation); }
+    catch { return []; }
+  };
+  if (selector.kind === 'arrivals_today') {
+    for (const a of await listArrivalsToday(todayStr)) add(a.r, a.id, a.label);
+  } else if (selector.kind === 'checkouts_today' || selector.kind === 'checkouts_tomorrow') {
+    const day = selector.kind === 'checkouts_today' ? todayStr : tomorrowStr;
+    for (const [label, id] of Object.entries(UNIT_LABEL_TO_ID)) { const { outgoing } = await getReservationsForDate(id, day); for (const r of outgoing) add(r, id, label); }
+  } else if (selector.kind === 'current_guests') {
+    for (const [label, id] of Object.entries(UNIT_LABEL_TO_ID)) for (const r of (await activeFor(id))) if (inHouse(r)) add(r, id, label);
+  } else if (selector.kind === 'units') {
+    for (const u of selector.units) { const id = UNIT_LABEL_TO_ID[u]; if (!id) continue; for (const r of (await activeFor(id))) if (inHouse(r)) add(r, id, u); }
+  }
+  const seen = new Set();
+  const uniq = members.filter(m => (seen.has(m.reservationId) ? false : seen.add(m.reservationId)));
+  return { selector, members: uniq, describe: audienceLib.describeAudience(selector, uniq.length) };
+}
+
 app.post('/api/notify', async (req, res) => {
   const { guestName = 'Unknown', messageBody = '', propertyName = 'Unknown', draftedReply = '' } = req.body;
   try {
@@ -3759,6 +3821,21 @@ app.listen(PORT, () => {
         if (r && r.paused) return `⏸ AUTOSEND is off — message NOT sent.`;
         return `✅ Sent to ${guest.name} (${guest.propertyName}).`;
       },
+      // Broadcast: render the ONE message per recipient (each body keyed to that member's own
+      // reservationId + name — the per-thread guard) and send to each thread. Fires only after approval.
+      broadcast_send: async ({ members, message }) => {
+        const rendered = audienceLib.renderBroadcast(members, message);
+        let sent = 0; const issues = [];
+        for (const r of rendered) {
+          try {
+            const out = await sendToHospitable(r.reservationId, r.body, 'reservation');
+            if (out && out.paused) { issues.push(`${r.firstName}: AUTOSEND off`); continue; }
+            sent++;
+          } catch (e) { issues.push(`${r.firstName}: ${e.message}`); }
+          await new Promise(res => setTimeout(res, 250));
+        }
+        return `✅ Sent to ${sent}/${rendered.length} guests${issues.length ? ` (issues: ${issues.join('; ')})` : ''}.`;
+      },
       pricing_adjust: async (intent) => {
         const { ok, json } = await callLocalApi('POST', '/api/pricing/adjust', { pct: intent.pct, start: intent.start, end: intent.end, units: intent.units });
         if (!ok) return `⚠️ Price adjust failed: ${json.error || 'error'}`;
@@ -3815,6 +3892,9 @@ app.listen(PORT, () => {
       parse: (text, history) => telegramIntent.parseIntent({ text, history, callClaude: callClaudeForBot, today: today() }),
       compose: composeGuestMessage,
       resolveGuest: resolveGuestThread,
+      // Broadcast: resolve a natural-language audience to threads + compose/revise the persuasive draft.
+      resolveAudience,
+      composeCampaign,
       handlers,
       // ── Two-layer memory (persisted to STATE_DIR; see telegram-memory.js) ──
       getHistory: (chatId) => telegramMemory.getHistory(chatId),

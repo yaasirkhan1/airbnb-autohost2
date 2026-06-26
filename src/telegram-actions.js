@@ -4,11 +4,11 @@
 
 // Actions that MUST be confirmed by the host before anything live happens. Everything else fires
 // immediately (it's a read or a low-risk, already-reversible cleaning/checkin op).
-const CONFIRM_ACTIONS = new Set(['guest_message', 'pricing_adjust', 'pricing_decay_freeze']);
+const CONFIRM_ACTIONS = new Set(['guest_message', 'broadcast_message', 'pricing_adjust', 'pricing_decay_freeze']);
 
 function requiresConfirmation(action) { return CONFIRM_ACTIONS.has(action); }
 
-const AFFIRM = /^(y|ya|yes|yep|yeah|yup|ok|okay|sure|send|send it|do it|go|confirm|confirmed|approved|👍|✅)\.?$/i;
+const AFFIRM = /^(y|ya|yes|yep|yeah|yup|ok|okay|sure|send|send it|do it|go|confirm|confirmed|approve|approved|👍|✅)\.?$/i;
 const NEGATE = /^(n|no|nope|nah|cancel|stop|don'?t|do not|abort|never ?mind|nvm|❌)\.?$/i;
 const isAffirmative = (t) => AFFIRM.test(String(t || '').trim());
 const isNegative = (t) => NEGATE.test(String(t || '').trim());

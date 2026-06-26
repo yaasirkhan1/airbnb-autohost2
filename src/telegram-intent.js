@@ -11,7 +11,8 @@ const ACTIONS = new Set([
   'checkin_status',      // today's check-in sweep result (read-only)
   'checkin_resend',      // re-send check-in instructions to a guest/unit (immediate)
   'frontdesk_form',      // fire the concierge/front-desk contingency for an arriving guest (immediate)
-  'guest_message',       // compose + send a guest message (CONFIRM before send)
+  'guest_message',       // compose + send a guest message to ONE guest (CONFIRM before send)
+  'broadcast_message',   // draft a persuasive message to an AUDIENCE; host approves before send (CONFIRM)
   'pricing_adjust',      // % price change over a date range (CONFIRM before apply)
   'pricing_decay_freeze',// freeze/unfreeze decay for a rolling N-day window (CONFIRM before apply)
   'pricing_status',      // VIEW decay/freeze state + why dates would/wouldn't decay (read-only)
@@ -32,7 +33,8 @@ Pick exactly one "action" from this list and include its fields:
 - "checkin_status": show today's check-in sweep. Optional "date":"YYYY-MM-DD".
 - "checkin_resend": re-send check-in instructions. Field "target": guest name OR unit label.
 - "frontdesk_form": send the front-desk/concierge form for a guest. Field "name": the guest's name.
-- "guest_message": host wants to message a guest in their own words. Fields "guest": guest name/identifier, "gist": what the host wants conveyed (you do NOT write the message here).
+- "guest_message": host wants to message ONE specific guest (named) in their own words. Fields "guest": guest name/identifier, "gist": what the host wants conveyed (you do NOT write the message here).
+- "broadcast_message": host wants to send a (often persuasive / sales) message to a GROUP of guests described in natural language — not one named person. Fields "audience": the raw phrase describing WHO (e.g. "today's arrivals", "guests in 4-L and 18-A", "everyone checking out tomorrow", "current guests"); "goal": what the message should accomplish/convey, including any offer, price, event, and timing (you do NOT write the message here). Use this whenever the target is a group/audience rather than a single named guest.
 - "pricing_adjust": change prices by a percentage over a date range. Fields "pct": signed number (lower 5% → -5, raise 10% → 10), "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", "units": "all" OR array of unit labels.
 - "pricing_decay_freeze": freeze or unfreeze automated price decay for a rolling window of N days from today. Fields "enable": true to FREEZE (turn decay OFF), false to UNFREEZE (turn decay back ON); "days": integer window length (default 7 when freezing).
 - "pricing_status": a READ-ONLY check of the decay/pricing state — sends nothing, changes nothing. Use for "what's the current decay setting", "is decay frozen", "is the freeze on", "why aren't prices changing for <dates>", "show decay status [for <dates>]", "what's the pricing doing for <dates>". Optional fields "start":"YYYY-MM-DD" and "end":"YYYY-MM-DD" (a date range to explain — default the next 7 days), and "units": "all" OR array of unit labels (default all). This is a question about WHY prices are/aren't moving — never pricing_adjust or pricing_decay_freeze (those CHANGE things).
@@ -110,6 +112,13 @@ function normalizeIntent(raw, { minConfidence = 0.6 } = {}) {
       const name = String(o.name || '').trim();
       if (!name) return clarify('Front-desk form for which guest?');
       return { action: 'frontdesk_form', name, confidence };
+    }
+    case 'broadcast_message': {
+      const audience = String(o.audience || '').trim();
+      const goal = String(o.goal || '').trim();
+      if (!audience) return clarify('Who should this go to — e.g. "today\'s arrivals", "guests in 4-L and 18-A", "everyone checking out tomorrow", "current guests"?');
+      if (!goal) return clarify('What should the message accomplish? Tell me the goal, any offer, the price, and the timing.');
+      return { action: 'broadcast_message', audience, goal, confidence };
     }
     case 'guest_message': {
       const guest = String(o.guest || '').trim();

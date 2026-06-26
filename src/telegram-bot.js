@@ -86,6 +86,8 @@ async function routeOwnerMessage(text, chatId, deps) {
       pending.delete(chatId);
       return { replies: ['Okay — cancelled, nothing sent or changed.'] };
     }
+    // Broadcast draft pending: a non-yes/no reply is an EDIT — revise the draft and re-show (still no send).
+    if (held.kind === 'broadcast_message' && deps.composeCampaign) return handleBroadcastEdit(held, text, chatId, deps);
     return { replies: [`You have a pending ${held.kind.replace('_', ' ')} awaiting confirmation. Reply "yes" to go ahead or "no" to cancel.`] };
   }
 
@@ -101,6 +103,7 @@ async function routeOwnerMessage(text, chatId, deps) {
 
   if (requiresConfirmation(intent.action)) {
     if (intent.action === 'guest_message') return handleGuestDraft(intent, chatId, deps);
+    if (intent.action === 'broadcast_message') return handleBroadcastDraft(intent, chatId, deps);
     // pricing_adjust / pricing_decay_freeze — echo the exact interpreted change, then wait for yes.
     pending.set(chatId, { kind: intent.action, intent });
     return { replies: [confirmText(intent)] };
@@ -127,8 +130,30 @@ async function handleGuestDraft(intent, chatId, deps) {
   return { replies: [`${confirmText(intent)}\n\n“${composed}”\n\nReply "yes" to send to ${res.guest.label}, or "no" to cancel.`] };
 }
 
+// broadcast_message: resolve the AUDIENCE, compose ONE persuasive message (Sonnet), show the host
+// who it'll go to + the draft, and stash it pending. Nothing is sent here.
+function broadcastPreview(describe, members, message, suffix = '') {
+  const who = members.map(m => `${m.firstName} (${m.unit})`).join(', ');
+  return `📣 Draft for ${describe}${suffix}\nRecipients: ${who}\n\n“${message}”\n\n(Personalized per guest by first name.) Reply "approve" to send to all ${members.length}, or tell me what to change. Nothing sends until you approve.`;
+}
+async function handleBroadcastDraft(intent, chatId, deps) {
+  const res = await deps.resolveAudience(intent.audience);
+  if (!res || !Array.isArray(res.members) || res.members.length === 0) {
+    return { replies: [(res && res.reason) || `I couldn’t find any guests for “${intent.audience}”. Who do you mean?`] };
+  }
+  const message = await deps.composeCampaign({ goal: intent.goal, audienceDesc: res.describe });
+  deps.pending.set(chatId, { kind: 'broadcast_message', members: res.members, goal: intent.goal, describe: res.describe, message });
+  return { replies: [broadcastPreview(res.describe, res.members, message)] };
+}
+async function handleBroadcastEdit(held, editText, chatId, deps) {
+  const message = await deps.composeCampaign({ goal: held.goal, audienceDesc: held.describe, prior: held.message, edit: editText });
+  deps.pending.set(chatId, { ...held, message });
+  return { replies: [broadcastPreview(held.describe, held.members, message, ' (updated):')] };
+}
+
 function executePending(held, deps) {
   if (held.kind === 'guest_message') return deps.handlers.guest_message_send({ guest: held.guest, text: held.text });
+  if (held.kind === 'broadcast_message') return deps.handlers.broadcast_send({ members: held.members, message: held.message });
   if (held.kind === 'pricing_adjust') return deps.handlers.pricing_adjust(held.intent);
   if (held.kind === 'pricing_decay_freeze') return deps.handlers.pricing_decay_freeze(held.intent);
   return Promise.resolve('Nothing to do.');
@@ -176,4 +201,4 @@ async function start(deps) {
   })();
 }
 
-module.exports = { isOwner, isOwnerDM, chatId, ownerTag, senderId, handleUpdate, routeOwnerMessage, handleGuestDraft, executePending, start };
+module.exports = { isOwner, isOwnerDM, chatId, ownerTag, senderId, handleUpdate, routeOwnerMessage, handleGuestDraft, handleBroadcastDraft, handleBroadcastEdit, broadcastPreview, executePending, start };
