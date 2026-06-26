@@ -32,6 +32,7 @@ const pricingConfig = require('./pricing-config.json');
 const { isNightBooked } = require('./pricing-guards');
 const telegramBot = require('./telegram-bot');
 const telegramIntent = require('./telegram-intent');
+const telegramMemory = require('./telegram-memory');
 const extensionOffer = require('./extension-offer');
 const { loadKnowledgeBase } = require('./knowledge-base');
 const { loadParkingKB, isParkingQuestion, buildParkingSection } = require('./parking-knowledge');
@@ -3810,10 +3811,28 @@ app.listen(PORT, () => {
     telegramBot.start({
       token, ownerId, log: console,
       pending: new Map(),
-      parse: (text) => telegramIntent.parseIntent({ text, callClaude: callClaudeForBot, today: today() }),
+      // HOT history fed into the parser so short answers resolve against prior turns (no re-asking).
+      parse: (text, history) => telegramIntent.parseIntent({ text, history, callClaude: callClaudeForBot, today: today() }),
       compose: composeGuestMessage,
       resolveGuest: resolveGuestThread,
       handlers,
+      // ── Two-layer memory (persisted to STATE_DIR; see telegram-memory.js) ──
+      getHistory: (chatId) => telegramMemory.getHistory(chatId),
+      recordTurn: (chatId, turn) => telegramMemory.recordTurn(chatId, turn),
+      isReachBack: (text) => telegramMemory.isReachBack(text),
+      // COLD reach-back: search the archive, answer from ONLY the relevant slice via Haiku, then drop it.
+      // The model is called ONLY on a reach-back — you pay for the lookup just when it happens.
+      recall: async (chatId, query) => {
+        const hits = telegramMemory.searchArchive(telegramMemory.loadArchive(), query, { chatId: String(chatId), limit: 6 });
+        if (!hits.length) return "I looked back through our older messages but couldn't find anything about that.";
+        const excerpts = telegramMemory.formatHistory(hits);
+        try {
+          const ans = await callClaudeForBot(telegramIntent.PARSE_MODEL,
+            'You answer the host\'s question using ONLY the older conversation excerpts provided. Be brief and concrete. If the excerpts do not contain the answer, say so plainly.',
+            `Older conversation excerpts (most relevant first):\n${excerpts}\n\nHost question: ${query}`);
+          return String(ans || '').trim() || `From our older messages:\n${excerpts}`;
+        } catch (e) { return `From our older messages:\n${excerpts}`; }
+      },
     });
   })();
 });

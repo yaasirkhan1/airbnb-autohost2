@@ -151,8 +151,13 @@ function clarify(reason) { return { action: 'clarify', reason: reason || 'Can yo
 function validDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) ? String(s) : null; }
 
 // Call Haiku and normalize. callClaude(model, systemPrompt, userMessage) → string (injectable).
-async function parseIntent({ text, callClaude, today, minConfidence } = {}) {
-  const userMessage = `TODAY is ${today}.\nHost message: ${String(text || '').trim()}`;
+async function parseIntent({ text, history, callClaude, today, minConfidence } = {}) {
+  // Feed recent conversation so short answers resolve against prior turns ("21-I" after "which unit?",
+  // "yes the first one", etc.) instead of being re-clarified. History is the HOT buffer (string).
+  const hist = history && String(history).trim()
+    ? `Recent conversation so far (most recent last) — use it to resolve references in the new message:\n${String(history).trim()}\n\n`
+    : '';
+  const userMessage = `TODAY is ${today}.\n${hist}Host message: ${String(text || '').trim()}`;
   let rawText = '';
   try {
     rawText = await callClaude(PARSE_MODEL, PARSE_SYSTEM_PROMPT, userMessage);

@@ -43,8 +43,11 @@ function ownerTag(ownerId) {
 }
 
 // Core dispatch. Returns { ignored?, replies: [string], fired?: action }. Mutates deps.pending.
+// MEMORY (optional, injected): when deps.getHistory / recordTurn / isReachBack / recall are wired,
+// the HOT buffer is fed to the parser (so the bot stops re-asking) and reach-back queries are answered
+// from the COLD archive. All gated on the deps existing, so callers without memory behave as before.
 async function handleUpdate(update, deps) {
-  const { ownerId, pending } = deps;
+  const { ownerId } = deps;
   const msg = update && (update.message || update.edited_message);
 
   // SECURITY GATE — only the owner, and only in their private chat (chat.id === ownerId). Anything
@@ -54,6 +57,22 @@ async function handleUpdate(update, deps) {
 
   const chatId = msg.chat && msg.chat.id;
   const text = msg.text.trim();
+  const result = await routeOwnerMessage(text, chatId, deps);
+
+  // Record this exchange (host msg + each bot reply) into the HOT buffer; aged-out turns roll to COLD.
+  // Memory must NEVER break dispatch, so it's wrapped and best-effort.
+  if (deps.recordTurn) {
+    try {
+      deps.recordTurn(chatId, { role: 'host', text });
+      for (const r of (result.replies || [])) deps.recordTurn(chatId, { role: 'bot', text: r });
+    } catch (e) { /* ignore memory write errors */ }
+  }
+  return result;
+}
+
+// Routing: pending confirmation → reach-back recall → fresh, history-aware parse.
+async function routeOwnerMessage(text, chatId, deps) {
+  const { pending } = deps;
   const held = pending.get(chatId);
 
   // ── A confirmation is pending: accept only yes/no; never fire anything else here. ──
@@ -70,8 +89,14 @@ async function handleUpdate(update, deps) {
     return { replies: [`You have a pending ${held.kind.replace('_', ' ')} awaiting confirmation. Reply "yes" to go ahead or "no" to cancel.`] };
   }
 
-  // ── Fresh command. ──
-  const intent = await deps.parse(text);
+  // ── Reach-back: a question about something OLD → search the COLD archive, answer from it, drop it. ──
+  if (deps.isReachBack && deps.isReachBack(text) && deps.recall) {
+    return { replies: [await deps.recall(chatId, text)] };
+  }
+
+  // ── Fresh command — parse WITH the HOT history so answers resolve against prior turns. ──
+  const history = deps.getHistory ? deps.getHistory(chatId) : '';
+  const intent = await deps.parse(text, history);
   if (intent.action === 'clarify') return { replies: [intent.reason] };
 
   if (requiresConfirmation(intent.action)) {
@@ -151,4 +176,4 @@ async function start(deps) {
   })();
 }
 
-module.exports = { isOwner, isOwnerDM, chatId, ownerTag, senderId, handleUpdate, handleGuestDraft, executePending, start };
+module.exports = { isOwner, isOwnerDM, chatId, ownerTag, senderId, handleUpdate, routeOwnerMessage, handleGuestDraft, executePending, start };
