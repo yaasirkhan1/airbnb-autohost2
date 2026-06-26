@@ -12,6 +12,7 @@
 // whole dispatch — owner lock, confirmation gating, front-desk resolution — is unit-testable with no
 // network. `start` is the only piece that touches the Telegram HTTP API.
 const { requiresConfirmation, confirmText, isAffirmative, isNegative } = require('./telegram-actions');
+const audience = require('./audience');   // pure helpers only (recipient-edit parsing, describe)
 
 // Extract the numeric sender id from an update (message OR edited_message), or null.
 function senderId(update) {
@@ -142,13 +143,37 @@ async function handleBroadcastDraft(intent, chatId, deps) {
     return { replies: [(res && res.reason) || `I couldn’t find any guests for “${intent.audience}”. Who do you mean?`] };
   }
   const message = await deps.composeCampaign({ goal: intent.goal, audienceDesc: res.describe });
-  deps.pending.set(chatId, { kind: 'broadcast_message', members: res.members, goal: intent.goal, describe: res.describe, message });
+  deps.pending.set(chatId, { kind: 'broadcast_message', members: res.members, selector: res.selector, goal: intent.goal, describe: res.describe, message });
   return { replies: [broadcastPreview(res.describe, res.members, message)] };
 }
+// A reply to a pending draft can edit the RECIPIENTS (remove/add units or guests), the WORDING, or
+// BOTH. Recipient changes are applied to the pending list; a leftover wording instruction re-composes.
 async function handleBroadcastEdit(held, editText, chatId, deps) {
-  const message = await deps.composeCampaign({ goal: held.goal, audienceDesc: held.describe, prior: held.message, edit: editText });
-  deps.pending.set(chatId, { ...held, message });
-  return { replies: [broadcastPreview(held.describe, held.members, message, ' (updated):')] };
+  const amend = audience.parseRecipientEdit(editText, held.members);
+  let members = held.members, recipientChanged = false;
+
+  // Removals (by unit and/or guest name) — but never empty the list silently.
+  if (amend.removeUnits.length || amend.removeNames.length) {
+    const filtered = audience.applyRecipientRemovals(members, amend);
+    if (filtered.length === 0) {
+      return { replies: [`That would remove everyone — I kept the current ${members.length} recipient${members.length === 1 ? '' : 's'}. Tell me who should actually get it.`] };
+    }
+    members = filtered; recipientChanged = true;
+  }
+  // Additions (units) — resolve to threads, dedup against current members.
+  if (amend.addUnits.length && deps.resolveUnits) {
+    const have = new Set(members.map(m => m.reservationId));
+    const fresh = (await deps.resolveUnits(amend.addUnits) || []).filter(m => m && m.reservationId && !have.has(m.reservationId));
+    if (fresh.length) { members = members.concat(fresh); recipientChanged = true; }
+  }
+  // Wording edit (only the leftover instruction, not the recipient phrases).
+  let message = held.message;
+  if (amend.textEdit) message = await deps.composeCampaign({ goal: held.goal, audienceDesc: held.describe, prior: held.message, edit: amend.textEdit });
+
+  const describe = audience.describeAudience(held.selector, members.length);
+  deps.pending.set(chatId, { ...held, members, describe, message });
+  const tag = recipientChanged && amend.textEdit ? ' (recipients + message updated):' : recipientChanged ? ' (recipients updated):' : ' (updated):';
+  return { replies: [broadcastPreview(describe, members, message, tag)] };
 }
 
 function executePending(held, deps) {

@@ -3895,6 +3895,8 @@ app.listen(PORT, () => {
       // Broadcast: resolve a natural-language audience to threads + compose/revise the persuasive draft.
       resolveAudience,
       composeCampaign,
+      // Resolve added units (e.g. "also add 7-B") to in-house threads, reusing the audience resolver.
+      resolveUnits: async (units) => (await resolveAudience((units || []).join(' '))).members,
       handlers,
       // ── Two-layer memory (persisted to STATE_DIR; see telegram-memory.js) ──
       getHistory: (chatId) => telegramMemory.getHistory(chatId),
