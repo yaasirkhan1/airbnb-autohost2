@@ -12,8 +12,8 @@ const unit = (label, reservations, calendar) => ({ unit: label, propertyId: 'p_'
 // fixtures
 const u_ext = unit('21-I', [{ id: 'rNabil', guest: 'Nabil', firstName: 'Nabil', checkIn: '2026-06-24', checkOut: TOM }], cal([[TOM, true, 117]]));            // extension + late checkout
 const u_turn = unit('18-A', [{ id: 'rOut', guest: 'Stella', firstName: 'Stella', checkIn: '2026-06-23', checkOut: TOM }, { id: 'rIn', guest: 'New', firstName: 'New', checkIn: TOM, checkOut: '2026-06-30' }], cal([[TOM, false, 0]])); // same-day turnover
-const u_early = unit('4-L', [{ id: 'rIsael', guest: 'Isael', firstName: 'Isael', checkIn: TODAY, checkOut: '2026-06-29' }], cal([])); // arrival today, no checkout today
-const u_earlyTurn = unit('7-B', [{ id: 'rO', guest: 'X', firstName: 'X', checkIn: '2026-06-20', checkOut: TODAY }, { id: 'rArr', guest: 'Y', firstName: 'Y', checkIn: TODAY, checkOut: '2026-06-28' }], cal([])); // arrival today BUT checkout today → not feasible
+const u_early = unit('4-L', [{ id: 'rIsael', guest: 'Isael', firstName: 'Isael', checkIn: TOM, checkOut: '2026-06-29' }], cal([[TODAY, true, 0]])); // arrives TOMORROW; night-before (today) vacant → ready early
+const u_earlyTurn = unit('21-I', [{ id: 'rMad', guest: 'Madison', firstName: 'Madison', checkIn: TODAY, checkOut: TOM }, { id: 'rCris', guest: 'Crispin', firstName: 'Crispin', checkIn: TOM, checkOut: '2026-06-28' }], cal([[TODAY, false, 0]])); // Crispin arrives TOMORROW but Madison occupies the night before (turnover) → NOT feasible
 const u_gap = unit('23-N', [{ id: 'rG', guest: 'Gita', firstName: 'Gita', checkIn: '2026-06-27', checkOut: '2026-06-29' }],
   cal([['2026-06-28', false, 0], ['2026-06-29', true, 90], ['2026-06-30', false, 0]])); // orphan vacant night 06-29
 
@@ -23,8 +23,10 @@ check('EXTENSION skipped on same-day turnover', () => s.detectExtension(u_turn) 
 check('EXTENSION skipped when night not vacant', () => s.detectExtension(unit('9', [{ id: 'r', checkOut: TOM, firstName: 'A' }], cal([[TOM, false, 0]]))) === null);
 check('LATE CHECKOUT fires for the same checkout guest (no arrival tomorrow)', () => { const o = s.detectLateCheckout(u_ext); return o && o.type === 'late_checkout' && o.firstName === 'Nabil'; });
 check('LATE CHECKOUT skipped when someone arrives tomorrow', () => s.detectLateCheckout(u_turn) === null);
-check('EARLY CHECK-IN fires: arrival today, no checkout today', () => { const o = s.detectEarlyCheckin(u_early); return o && o.type === 'early_checkin' && o.firstName === 'Isael'; });
-check('EARLY CHECK-IN skipped on same-day turnover (cleaning)', () => s.detectEarlyCheckin(u_earlyTurn) === null);
+check('EARLY CHECK-IN fires: arrival TOMORROW + night-before vacant (date basis = tomorrow)', () => { const o = s.detectEarlyCheckin(u_early); return o && o.type === 'early_checkin' && o.firstName === 'Isael' && o.dates.checkin === TOM; });
+check('EARLY CHECK-IN does NOT fire on today\'s arrival (old bug — wrong date basis)', () => s.detectEarlyCheckin(unit('9', [{ id: 'r', firstName: 'A', checkIn: TODAY, checkOut: '2026-06-29' }], cal([['2026-06-25', true, 0]]))) === null);
+check('EARLY CHECK-IN does NOT fire when night-before is occupied (Crispin/Madison turnover)', () => s.detectEarlyCheckin(u_earlyTurn) === null);
+check('EARLY CHECK-IN does NOT fire when night-before calendar is unknown (fail-closed)', () => s.detectEarlyCheckin(unit('9', [{ id: 'r', firstName: 'A', checkIn: TOM, checkOut: '2026-06-29' }], cal([]))) === null);
 check('GAP FILL finds the orphan vacant night, booked both sides', () => { const g = s.detectGapFill(u_gap); return g.length === 1 && g[0].dates.night === '2026-06-29' && g[0].baseline.calendarPrice === 90; });
 check('GAP FILL does NOT fire on missing calendar data (unknown ≠ booked)', () => s.detectGapFill(u_ext).length === 0 && s.scanUnit(u_ext).every(o => o.type !== 'gap_fill'));
 

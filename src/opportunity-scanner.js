@@ -29,12 +29,15 @@ function detectExtension(u) {
   if (!nightVacant(u, u.tomorrow)) return null;
   return opp('extension', u, out, { night: u.tomorrow }, { calendarPrice: u.calendar[u.tomorrow].price });
 }
-// EARLY CHECK-IN: a guest arrives TODAY and there's no checkout today (unit sat empty overnight → can be ready early).
+// EARLY CHECK-IN: a guest genuinely arrives TOMORROW (same date basis as the rest of the digest) AND
+// the unit is VACANT the night before that arrival (calendar for arrival − 1) — so it can truly be
+// ready early. The night-before vacancy check also excludes same-day turnovers (a prior guest
+// occupying that night leaves it not-vacant), which is what makes early check-in actually feasible.
 function detectEarlyCheckin(u) {
-  const arr = checkinOn(u, u.today);
+  const arr = checkinOn(u, u.tomorrow);
   if (!arr) return null;
-  if (checkoutOn(u, u.today)) return null;                   // same-day turnover → cleaning, not feasible
-  return opp('early_checkin', u, arr, { checkin: u.today }, {});
+  if (!nightVacant(u, addDays(u.tomorrow, -1))) return null;
+  return opp('early_checkin', u, arr, { checkin: u.tomorrow }, {});
 }
 // LATE CHECKOUT: a guest checks out tomorrow and no one arrives tomorrow (unit isn't turning over).
 function detectLateCheckout(u) {
